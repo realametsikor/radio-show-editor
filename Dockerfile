@@ -2,7 +2,7 @@
 # Dockerfile — Radio Show Editor Backend (FastAPI + Celery)
 # =============================================================================
 # Build:   docker build -t radio-show-backend .
-# Run:     docker run -p 8000:8000 radio-show-backend
+# Run:     docker run -p 8000:8000 --env-file .env radio-show-backend
 # =============================================================================
 
 FROM python:3.11-slim
@@ -14,6 +14,7 @@ RUN apt-get update && \
         ffmpeg \
         libsndfile1 \
         git \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Working directory ────────────────────────────────────────────────────────
@@ -35,8 +36,17 @@ COPY assets/ ./assets/
 # ── Prepare entrypoint ──────────────────────────────────────────────────────
 RUN chmod +x start.sh
 
-# ── Create uploads directory ─────────────────────────────────────────────────
-RUN mkdir -p /app/uploads
+# ── Create uploads directory & non-root user ────────────────────────────────
+RUN groupadd --gid 1000 appuser && \
+    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser && \
+    mkdir -p /app/uploads && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+# ── Health check ────────────────────────────────────────────────────────────
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
 
 # ── Expose API port ─────────────────────────────────────────────────────────
 EXPOSE 8000

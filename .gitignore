@@ -16,6 +16,7 @@ build/
 npm-debug.log*
 
 # env files
+.env
 .env*.local
 
 # typescript
@@ -26,3 +27,6 @@ next-env.d.ts
 __pycache__/
 *.pyc
 *.egg-info/
+
+# uploads
+uploads/
