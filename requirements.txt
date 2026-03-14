@@ -1,0 +1,13 @@
+# Phase 2 — Core Audio Engine
+pydub>=0.25.1
+pyannote.audio>=3.1
+openai-whisper>=20231117
+ffmpeg-python>=0.2.0
+
+# Phase 3 — Async API (FastAPI + Celery)
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+celery[redis]>=5.3.0
+redis>=5.0.0
+python-multipart>=0.0.9
+aiofiles>=23.2.0
