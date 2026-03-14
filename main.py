@@ -1,23 +1,8 @@
-"""
-main.py — FastAPI Application for the Radio Show Editor
-========================================================
-Provides three endpoints:
-
-    POST   /upload            Upload a .wav file → returns ``{task_id}``
-    GET    /status/{task_id}  Poll task progress → PENDING / PROCESSING / SUCCESS / FAILURE
-    GET    /download/{task_id}  Download the final mixed .wav file
-
-Designed for deployment on Hugging Face Spaces (Docker, port 7860).
-Uses FastAPI BackgroundTasks with an in-memory dict instead of Celery/Redis.
-
-Run the server:
-    uvicorn main:app --host 0.0.0.0 --port 7860
-"""
-
 from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -28,24 +13,14 @@ from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# In-memory task store
-# ---------------------------------------------------------------------------
-# Tracks task status across the lifetime of the process.
-# Structure: { task_id: {"status": str, "result_file": str|None, "error": str|None} }
 tasks: dict[str, dict] = {}
 
-# ---------------------------------------------------------------------------
-# App Setup
-# ---------------------------------------------------------------------------
 app = FastAPI(
     title="Radio Show Editor API",
     description="Upload a podcast, let the pipeline process it, download the finished radio show.",
     version="0.2.0",
 )
 
-# CORS: use ALLOWED_ORIGINS env var (comma-separated) in production,
-# falls back to the Vercel frontend for safety.
 _raw_origins = os.environ.get(
     "ALLOWED_ORIGINS",
     "https://radio-show-editor.vercel.app",
@@ -60,55 +35,53 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Temporary upload directory — each upload gets its own subfolder.
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Maximum upload size (500 MB).
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 
-# ---------------------------------------------------------------------------
-# Background processing function
-# ---------------------------------------------------------------------------
 def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
-    """Run the full pipeline in a background thread.
-
-    Updates the in-memory ``tasks`` dict so the /status endpoint can
-    report progress.
-    """
     from core_audio_engine.engine import run_pipeline
     from core_audio_engine.music_fetch import fetch_music_for_mood
 
     tasks[task_id]["status"] = "PROCESSING"
 
-    fp = Path(file_path)
-    if not fp.is_file():
+    original_fp = Path(file_path)
+    if not original_fp.is_file():
         tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = f"Uploaded file not found: {fp}"
+        tasks[task_id]["error"] = f"Uploaded file not found: {original_fp}"
         return
 
-    output_dir = fp.parent / "output"
-    output_file = fp.parent / "radio_show_final.wav"
+    job_dir = original_fp.parent
+    output_dir = job_dir / "output"
+    output_file = job_dir / "radio_show_final.wav"
 
-    # --- Resolve background music ---
-    # If a mood was selected and the Jamendo Client ID is available, fetch
-    # a dynamic track.  Otherwise, fall back to the static asset.
+    # Re-encode to clean 44100Hz mono WAV to fix sample mismatches
+    clean_path = job_dir / "clean_upload.wav"
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(original_fp),
+             "-ar", "44100", "-ac", "1", "-sample_fmt", "s16",
+             str(clean_path)],
+            check=True,
+            capture_output=True,
+        )
+        audio_to_process = clean_path
+        logger.info("Re-encoded audio → %s", audio_to_process)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("ffmpeg re-encode failed, using original: %s", exc.stderr.decode())
+        audio_to_process = original_fp
+
+    # Resolve background music
     music_path: str | None = None
 
     if mood and os.environ.get("JAMENDO_CLIENT_ID"):
-        logger.info("Fetching dynamic music for mood '%s' (task %s)", mood, task_id)
         try:
-            fetched = fetch_music_for_mood(
-                mood=mood,
-                output_dir=str(fp.parent),
-            )
+            fetched = fetch_music_for_mood(mood=mood, output_dir=str(job_dir))
             music_path = str(fetched)
-            logger.info("Dynamic music downloaded → %s", music_path)
         except Exception as exc:
-            logger.warning(
-                "Dynamic music fetch failed, falling back to static asset: %s", exc
-            )
+            logger.warning("Dynamic music fetch failed: %s", exc)
 
     if not music_path:
         music_path = os.environ.get(
@@ -116,11 +89,9 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
         )
 
-    logger.info("Starting pipeline for %s (task %s)", fp, task_id)
-
     try:
         final_path = run_pipeline(
-            raw_audio=str(fp),
+            raw_audio=str(audio_to_process),
             music_path=music_path,
             output_path=str(output_file),
             output_dir=str(output_dir),
@@ -128,48 +99,35 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
-        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
     except Exception as exc:
-        logger.exception("Pipeline failed for %s (task %s)", fp, task_id)
+        logger.exception("Pipeline failed for task %s", task_id)
         tasks[task_id]["status"] = "FAILURE"
         tasks[task_id]["error"] = str(exc)
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
 @app.post("/upload")
 async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     mood: str = Form(""),
 ):
-    """Accept an audio file upload, save it to disk, and dispatch the
-    processing task as a background job.
-
-    Returns ``{"task_id": "<uuid>"}`` immediately.
-    """
-    # Validate content type
     if file.content_type and not file.content_type.startswith("audio/"):
         raise HTTPException(
             status_code=400,
             detail=f"Expected an audio file, got '{file.content_type}'.",
         )
 
-    # Create a unique directory for this job
     task_id = uuid.uuid4().hex
     job_dir = UPLOAD_DIR / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    # Preserve original filename or fall back to a safe default
     safe_name = file.filename or "upload.wav"
     file_path = job_dir / safe_name
 
-    # Stream the upload to disk
     total_bytes = 0
     try:
         async with aiofiles.open(file_path, "wb") as out:
-            while chunk := await file.read(1024 * 1024):  # 1 MB chunks
+            while chunk := await file.read(1024 * 1024):
                 total_bytes += len(chunk)
                 if total_bytes > MAX_UPLOAD_BYTES:
                     raise HTTPException(
@@ -182,9 +140,6 @@ async def upload_audio(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
 
-    logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
-
-    # Register task and dispatch background processing
     tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None}
     background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood)
 
@@ -193,14 +148,6 @@ async def upload_audio(
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
-    """Check the current state of a processing task.
-
-    Possible states:
-        - PENDING: Task is queued but not yet started.
-        - PROCESSING: Task is actively running.
-        - SUCCESS: Task finished; the result file is ready for download.
-        - FAILURE: Task failed; an error message is included.
-    """
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
 
@@ -217,7 +164,6 @@ async def get_status(task_id: str):
 
 @app.get("/download/{task_id}")
 async def download_result(task_id: str):
-    """Serve the final mixed .wav file if the task completed successfully."""
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
 
@@ -246,6 +192,4 @@ async def download_result(task_id: str):
 
 @app.get("/health")
 async def health_check():
-    """Lightweight health probe for container orchestration and load balancers."""
     return {"status": "ok"}
-
