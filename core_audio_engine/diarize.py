@@ -1,23 +1,3 @@
-"""
-diarize.py — Speaker Diarization & Source Separation
-=====================================================
-Uses pyannote.audio to perform speaker diarization on a single podcast .wav
-file, then separates the audio into per-speaker files (host_A.wav, host_B.wav).
-
-Prerequisites:
-    1. A HuggingFace token with access to the pyannote gated models.
-       Set the environment variable ``HF_AUTH_TOKEN`` **or** pass the token
-       directly via the ``hf_token`` parameter.
-    2. Accept the pyannote model licences on HuggingFace:
-       - https://huggingface.co/pyannote/speaker-diarization-3.1
-       - https://huggingface.co/pyannote/segmentation-3.0
-
-Usage:
-    from core_audio_engine.diarize import diarize_speakers
-
-    host_a, host_b = diarize_speakers("podcast.wav", output_dir="output/")
-"""
-
 from __future__ import annotations
 
 import logging
@@ -29,9 +9,6 @@ from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def diarize_speakers(
     audio_path: str | Path,
@@ -41,37 +18,7 @@ def diarize_speakers(
     num_speakers: int = 2,
     min_segment_ms: int = 100,
 ) -> tuple[Path, Path]:
-    """Diarize *audio_path* into individual speaker files.
-
-    Parameters
-    ----------
-    audio_path : str | Path
-        Path to the input podcast .wav file.
-    output_dir : str | Path
-        Directory where ``host_A.wav`` and ``host_B.wav`` will be written.
-    hf_token : str, optional
-        HuggingFace auth token.  Falls back to the ``HF_AUTH_TOKEN`` env var.
-    num_speakers : int
-        Expected number of speakers (default 2 for a two-host podcast).
-    min_segment_ms : int
-        Minimum segment duration in milliseconds.  Segments shorter than this
-        are discarded to reduce noise.
-
-    Returns
-    -------
-    tuple[Path, Path]
-        Paths to ``host_A.wav`` and ``host_B.wav``.
-
-    Raises
-    ------
-    FileNotFoundError
-        If *audio_path* does not exist.
-    EnvironmentError
-        If no HuggingFace token is available.
-    RuntimeError
-        If diarization produces fewer than 2 speakers.
-    """
-    from pyannote.audio import Pipeline  # noqa: E402
+    from pyannote.audio import Pipeline
 
     audio_path = Path(audio_path)
     output_dir = Path(output_dir)
@@ -79,7 +26,6 @@ def diarize_speakers(
     if not audio_path.is_file():
         raise FileNotFoundError(f"Audio file not found: {audio_path}")
 
-    # --- Resolve HuggingFace token ----------------------------------------
     token = hf_token or os.environ.get("HF_AUTH_TOKEN")
     if not token:
         raise EnvironmentError(
@@ -89,20 +35,23 @@ def diarize_speakers(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Load the diarization pipeline ------------------------------------
     logger.info("Loading pyannote speaker-diarization pipeline …")
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
         token=token,
     )
 
-    # --- Run diarization ---------------------------------------------------
     logger.info("Running diarization on '%s' (expecting %d speakers) …", audio_path, num_speakers)
-    diarization = pipeline(str(audio_path), num_speakers=num_speakers)
+    result = pipeline(str(audio_path), num_speakers=num_speakers)
 
-    # --- Collect per-speaker timeline segments -----------------------------
+    # Handle both Annotation and DiarizeOutput (community model)
+    if hasattr(result, "speaker_diarization"):
+        annotation = result.speaker_diarization
+    else:
+        annotation = result
+
     speaker_segments: dict[str, list[tuple[float, float]]] = {}
-    for turn, _, speaker_label in diarization.itertracks(yield_label=True):
+    for turn, _, speaker_label in annotation.itertracks(yield_label=True):
         speaker_segments.setdefault(speaker_label, []).append((turn.start, turn.end))
 
     detected = sorted(speaker_segments.keys())
@@ -115,7 +64,6 @@ def diarize_speakers(
             "input audio."
         )
 
-    # --- Extract audio for the two most prominent speakers ----------------
     ranked = sorted(
         detected,
         key=lambda s: sum(end - start for start, end in speaker_segments[s]),
@@ -154,9 +102,6 @@ def diarize_speakers(
     return results[0], results[1]
 
 
-# ---------------------------------------------------------------------------
-# CLI convenience
-# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import argparse
 
