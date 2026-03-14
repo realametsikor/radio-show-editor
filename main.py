@@ -92,11 +92,11 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     output_file = fp.parent / "radio_show_final.wav"
 
     # --- Resolve background music ---
-    # If a mood was selected and the Pixabay API key is available, fetch
+    # If a mood was selected and the Jamendo Client ID is available, fetch
     # a dynamic track.  Otherwise, fall back to the static asset.
     music_path: str | None = None
 
-    if mood and os.environ.get("PIXABAY_API_KEY"):
+    if mood and os.environ.get("JAMENDO_CLIENT_ID"):
         logger.info("Fetching dynamic music for mood '%s' (task %s)", mood, task_id)
         try:
             fetched = fetch_music_for_mood(
