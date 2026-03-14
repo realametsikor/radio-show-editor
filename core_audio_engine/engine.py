@@ -1,63 +1,103 @@
-def process_audio(task_id: str, file_path: str) -> None:
-    """Run the full pipeline in a background thread with Jamendo API music."""
+"""
+engine.py — Pipeline Orchestrator
+===================================
+Runs the full radio-show post-production pipeline:
+
+    1. Speaker diarization  →  host_A.wav, host_B.wav
+    2. Keyword-triggered SFX →  host_A_sfx.wav
+    3. Audio ducking mix     →  final radio show .wav
+
+Usage:
     from core_audio_engine.engine import run_pipeline
 
-    tasks[task_id]["status"] = "PROCESSING"
+    final = run_pipeline(
+        raw_audio="podcast.wav",
+        music_path="background_music.wav",
+        output_path="radio_show_final.wav",
+        output_dir="output/",
+        hf_token="hf_...",
+    )
+"""
 
-    fp = Path(file_path)
-    if not fp.is_file():
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = f"Uploaded file not found: {fp}"
-        return
+from __future__ import annotations
 
-    output_dir = fp.parent / "output"
-    output_file = fp.parent / "radio_show_final.wav"
-    
-    # --- NEW JAMENDO API LOGIC ---
-    logger.info("Fetching background music from Jamendo API...")
-    music_path = str(fp.parent / "jamendo_track.mp3")
-    client_id = os.environ.get("JAMENDO_CLIENT_ID")
-    
-    if client_id:
-        try:
-            # We are defaulting to 'lofi' but you can change this tag!
-            url = f"https://api.jamendo.com/v3.0/tracks/?client_id={client_id}&format=json&tags=lofi&limit=1"
-            response = requests.get(url)
-            data = response.json()
-            
-            if data.get('results'):
-                audio_url = data['results'][0]['audio_download']
-                music_data = requests.get(audio_url).content
-                with open(music_path, "wb") as f:
-                    f.write(music_data)
-                logger.info("Successfully downloaded Jamendo track!")
-            else:
-                raise ValueError("No tracks found on Jamendo for that tag.")
-        except Exception as e:
-            logger.error("Jamendo failed, falling back: %s", e)
-            tasks[task_id]["status"] = "FAILURE"
-            tasks[task_id]["error"] = f"Music API failed: {e}"
-            return
-    else:
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = "JAMENDO_CLIENT_ID environment variable is missing."
-        return
-    # -----------------------------
+import logging
+from pathlib import Path
+from typing import Optional
 
-    logger.info("Starting pipeline for %s (task %s)", fp, task_id)
+from core_audio_engine.diarize import diarize_speakers
+from core_audio_engine.sfx import apply_sfx
+from core_audio_engine.mixer import mix_with_ducking
 
-    try:
-        final_path = run_pipeline(
-            raw_audio=str(fp),
-            music_path=music_path,
-            output_path=str(output_file),
-            output_dir=str(output_dir),
-            hf_token=os.environ.get("HF_AUTH_TOKEN"),
-        )
-        tasks[task_id]["status"] = "SUCCESS"
-        tasks[task_id]["result_file"] = str(final_path)
-        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
-    except Exception as exc:
-        logger.exception("Pipeline failed for %s (task %s)", fp, task_id)
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = str(exc)
+logger = logging.getLogger(__name__)
+
+
+def run_pipeline(
+    raw_audio: str | Path,
+    music_path: str | Path,
+    output_path: str | Path = "radio_show_final.wav",
+    output_dir: str | Path = "output",
+    *,
+    hf_token: Optional[str] = None,
+) -> Path:
+    """Run the full radio-show post-production pipeline.
+
+    Parameters
+    ----------
+    raw_audio : str | Path
+        Path to the uploaded podcast .wav file.
+    music_path : str | Path
+        Path to the background music file (.wav or .mp3).
+    output_path : str | Path
+        Destination for the final mixed radio show .wav file.
+    output_dir : str | Path
+        Working directory for intermediate files (diarized tracks, etc.).
+    hf_token : str, optional
+        HuggingFace auth token for pyannote speaker diarization.
+
+    Returns
+    -------
+    Path
+        Resolved path to the final mixed .wav file.
+    """
+    raw_audio = Path(raw_audio)
+    music_path = Path(music_path)
+    output_path = Path(output_path)
+    output_dir = Path(output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Step 1: Speaker diarization
+    # ------------------------------------------------------------------
+    logger.info("Step 1/3 — Diarizing speakers …")
+    host_a, host_b = diarize_speakers(
+        audio_path=raw_audio,
+        output_dir=output_dir,
+        hf_token=hf_token,
+    )
+    logger.info("Diarization complete: %s, %s", host_a, host_b)
+
+    # ------------------------------------------------------------------
+    # Step 2: Keyword-triggered sound effects on host A
+    # ------------------------------------------------------------------
+    logger.info("Step 2/3 — Applying keyword-triggered SFX …")
+    host_a_sfx = output_dir / "host_A_sfx.wav"
+    apply_sfx(
+        audio_path=host_a,
+        output_path=host_a_sfx,
+    )
+    logger.info("SFX applied: %s", host_a_sfx)
+
+    # ------------------------------------------------------------------
+    # Step 3: Mix voice tracks with background music (ducking)
+    # ------------------------------------------------------------------
+    logger.info("Step 3/3 — Mixing with background music (ducking) …")
+    final = mix_with_ducking(
+        voice_path=host_a_sfx,
+        music_path=music_path,
+        output_path=output_path,
+    )
+    logger.info("Pipeline complete → %s", final)
+
+    return final
