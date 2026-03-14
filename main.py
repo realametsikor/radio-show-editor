@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 import aiofiles
-from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -71,13 +71,14 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 # ---------------------------------------------------------------------------
 # Background processing function
 # ---------------------------------------------------------------------------
-def process_audio(task_id: str, file_path: str) -> None:
+def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     """Run the full pipeline in a background thread.
 
     Updates the in-memory ``tasks`` dict so the /status endpoint can
     report progress.
     """
     from core_audio_engine.engine import run_pipeline
+    from core_audio_engine.music_fetch import fetch_music_for_mood
 
     tasks[task_id]["status"] = "PROCESSING"
 
@@ -90,10 +91,30 @@ def process_audio(task_id: str, file_path: str) -> None:
     output_dir = fp.parent / "output"
     output_file = fp.parent / "radio_show_final.wav"
 
-    music_path = os.environ.get(
-        "BACKGROUND_MUSIC_PATH",
-        str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
-    )
+    # --- Resolve background music ---
+    # If a mood was selected and the Pixabay API key is available, fetch
+    # a dynamic track.  Otherwise, fall back to the static asset.
+    music_path: str | None = None
+
+    if mood and os.environ.get("PIXABAY_API_KEY"):
+        logger.info("Fetching dynamic music for mood '%s' (task %s)", mood, task_id)
+        try:
+            fetched = fetch_music_for_mood(
+                mood=mood,
+                output_dir=str(fp.parent),
+            )
+            music_path = str(fetched)
+            logger.info("Dynamic music downloaded → %s", music_path)
+        except Exception as exc:
+            logger.warning(
+                "Dynamic music fetch failed, falling back to static asset: %s", exc
+            )
+
+    if not music_path:
+        music_path = os.environ.get(
+            "BACKGROUND_MUSIC_PATH",
+            str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
+        )
 
     logger.info("Starting pipeline for %s (task %s)", fp, task_id)
 
@@ -121,6 +142,7 @@ def process_audio(task_id: str, file_path: str) -> None:
 async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    mood: str = Form(""),
 ):
     """Accept an audio file upload, save it to disk, and dispatch the
     processing task as a background job.
@@ -164,7 +186,7 @@ async def upload_audio(
 
     # Register task and dispatch background processing
     tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None}
-    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()))
+    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood)
 
     return {"task_id": task_id}
 

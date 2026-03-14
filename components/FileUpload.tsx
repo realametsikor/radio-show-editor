@@ -9,9 +9,21 @@ import {
   Loader2,
   AlertCircle,
   CheckCircle2,
+  ChevronDown,
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+const MOOD_OPTIONS = [
+  { value: "lo-fi", label: "Lo-Fi Chill" },
+  { value: "upbeat", label: "Upbeat & Energetic" },
+  { value: "news", label: "News Broadcast" },
+  { value: "ambient", label: "Ambient & Atmospheric" },
+  { value: "jazz", label: "Smooth Jazz" },
+  { value: "cinematic", label: "Cinematic & Epic" },
+  { value: "acoustic", label: "Acoustic & Warm" },
+  { value: "electronic", label: "Electronic & Modern" },
+];
 
 interface FileUploadProps {
   onUploadComplete: (taskId: string) => void;
@@ -28,6 +40,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileSize, setFileSize] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [selectedMood, setSelectedMood] = useState("lo-fi");
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
@@ -42,6 +55,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
       const formData = new FormData();
       formData.append("file", file);
+      formData.append("mood", selectedMood);
 
       try {
         const response = await axios.post(`${API_BASE}/upload`, formData, {
@@ -69,7 +83,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         setUploading(false);
       }
     },
-    [onUploadComplete]
+    [onUploadComplete, selectedMood]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
@@ -84,6 +98,35 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
   return (
     <div className="w-full max-w-xl mx-auto">
+      {/* Mood / Vibe Selector */}
+      <div className="mb-6">
+        <label
+          htmlFor="mood-select"
+          className="block text-sm font-medium text-gray-300 mb-2"
+        >
+          Choose a Vibe for your radio show
+        </label>
+        <div className="relative">
+          <select
+            id="mood-select"
+            value={selectedMood}
+            onChange={(e) => setSelectedMood(e.target.value)}
+            disabled={uploading}
+            className="w-full appearance-none rounded-xl border border-gray-700 bg-[rgba(15,15,25,0.8)] px-4 py-3 pr-10 text-sm text-white transition focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {MOOD_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+        </div>
+        <p className="mt-1.5 text-xs text-gray-500">
+          This sets the background music style for your finished radio show.
+        </p>
+      </div>
+
       <div
         {...getRootProps()}
         className={`glass-card relative flex flex-col items-center justify-center rounded-2xl p-12 transition-all duration-300 cursor-pointer
