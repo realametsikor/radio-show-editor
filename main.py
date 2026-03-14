@@ -99,6 +99,7 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
+        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
     except Exception as exc:
         logger.exception("Pipeline failed for task %s", task_id)
         tasks[task_id]["status"] = "FAILURE"
@@ -139,6 +140,8 @@ async def upload_audio(
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
+
+    logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
 
     tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None}
     background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood)
