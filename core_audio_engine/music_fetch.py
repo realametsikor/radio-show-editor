@@ -1,17 +1,24 @@
 """
-music_fetch.py — Dynamic Background Music Fetcher
-===================================================
-Fetches royalty-free background music from the Pixabay Music API based on a
-user-selected mood/vibe, then downloads the best matching track into the
-task's working directory.
+music_fetch.py — Dynamic Background Music Fetcher (Jamendo)
+============================================================
+Fetches royalty-free background music from the Jamendo API based on a
+user-selected mood/vibe tag, then downloads the best matching track into
+the task's working directory.
+
+Jamendo's free tier allows tag-based searching and provides direct MP3
+download URLs — ideal for dynamic background music selection.
 
 Usage:
     from core_audio_engine.music_fetch import fetch_music_for_mood
 
     music_path = fetch_music_for_mood(
-        mood="lo-fi",
+        mood="chill",
         output_dir="/uploads/abc123/",
     )
+
+Environment:
+    JAMENDO_CLIENT_ID  —  Your Jamendo application Client ID.
+    Sign up at https://developer.jamendo.com/
 """
 
 from __future__ import annotations
@@ -26,66 +33,44 @@ import requests
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Mood → Pixabay search query mapping
+# Mood → Jamendo tag mapping
 # ---------------------------------------------------------------------------
-# Maps the frontend mood slugs to effective Pixabay search terms and optional
-# category filters.  Pixabay's music categories include: backgrounds, beats,
-# classical, electronic, etc.
-MOOD_SEARCH_MAP: dict[str, dict] = {
-    "lo-fi": {
-        "q": "lo-fi chill",
-        "category": "",
-    },
-    "upbeat": {
-        "q": "upbeat happy energy",
-        "category": "",
-    },
-    "news": {
-        "q": "news broadcast corporate",
-        "category": "",
-    },
-    "ambient": {
-        "q": "ambient atmospheric calm",
-        "category": "",
-    },
-    "jazz": {
-        "q": "jazz smooth",
-        "category": "",
-    },
-    "cinematic": {
-        "q": "cinematic epic trailer",
-        "category": "",
-    },
-    "acoustic": {
-        "q": "acoustic warm guitar",
-        "category": "",
-    },
-    "electronic": {
-        "q": "electronic modern synth",
-        "category": "",
-    },
+# Maps the frontend mood slugs to Jamendo search tags.  Jamendo supports
+# freeform tag strings (space- or plus-separated).
+MOOD_TAG_MAP: dict[str, str] = {
+    "chill": "chill",
+    "lo-fi": "lofi+chill",
+    "upbeat": "upbeat+happy",
+    "news": "corporate+news",
+    "ambient": "ambient+calm",
+    "jazz": "jazz+smooth",
+    "cinematic": "cinematic+epic",
+    "acoustic": "acoustic+guitar",
+    "electronic": "electronic+synth",
+    "suspense": "suspense+dark",
 }
 
-PIXABAY_API_URL = "https://pixabay.com/api/"
+JAMENDO_API_URL = "https://api.jamendo.com/v3.0/tracks/"
 
 
 def fetch_music_for_mood(
     mood: str,
     output_dir: str | Path,
-    api_key: Optional[str] = None,
+    client_id: Optional[str] = None,
 ) -> Path:
-    """Search the Pixabay API for music matching *mood* and download the first result.
+    """Search the Jamendo API for a track matching *mood* and download it.
 
     Parameters
     ----------
     mood : str
-        One of the mood keys defined in ``MOOD_SEARCH_MAP`` (e.g. "lo-fi",
-        "upbeat", "news").  Falls back to a generic "background music" search
-        if the mood is unrecognised.
+        One of the mood keys defined in ``MOOD_TAG_MAP`` (e.g. "chill",
+        "upbeat", "suspense").  Falls back to the raw mood string as a
+        Jamendo tag if the mood is not in the map.
     output_dir : str | Path
         Directory to save the downloaded music file into.
-    api_key : str, optional
-        Pixabay API key.  If not provided, reads from ``PIXABAY_API_KEY`` env var.
+    client_id : str, optional
+        Jamendo application Client ID.  If not provided, reads from the
+        ``JAMENDO_CLIENT_ID`` environment variable.
 
     Returns
     -------
@@ -95,86 +80,79 @@ def fetch_music_for_mood(
     Raises
     ------
     RuntimeError
-        If the API key is missing, no results are returned, or the download fails.
+        If the Client ID is missing, no results are returned, or the
+        download fails.
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    key = api_key or os.environ.get("PIXABAY_API_KEY", "")
-    if not key:
+    cid = client_id or os.environ.get("JAMENDO_CLIENT_ID", "")
+    if not cid:
         raise RuntimeError(
-            "Pixabay API key not configured. "
-            "Set the PIXABAY_API_KEY environment variable."
+            "Jamendo Client ID not configured. "
+            "Set the JAMENDO_CLIENT_ID environment variable."
         )
 
-    # Resolve search parameters from mood
-    search_config = MOOD_SEARCH_MAP.get(mood, {"q": "background music", "category": ""})
-    search_query = search_config["q"]
-    category = search_config.get("category", "")
+    # Resolve tag(s) from mood
+    tags = MOOD_TAG_MAP.get(mood, mood)
 
-    logger.info("Searching Pixabay music: mood=%s, query='%s'", mood, search_query)
+    logger.info("Searching Jamendo: mood=%s, tags='%s'", mood, tags)
 
     # ------------------------------------------------------------------
-    # Step 1: Search the Pixabay API
+    # Step 1: Search the Jamendo API
     # ------------------------------------------------------------------
     params: dict = {
-        "key": key,
-        "q": search_query,
-        "per_page": 5,
-        "safesearch": "true",
-        "order": "popular",
+        "client_id": cid,
+        "format": "json",
+        "limit": 5,
+        "tags": tags,
+        "include": "musicinfo",
+        "audioformat": "mp32",
+        "order": "popularity_total",
     }
-    if category:
-        params["category"] = category
 
     try:
-        resp = requests.get(PIXABAY_API_URL, params=params, timeout=15)
+        resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        raise RuntimeError(f"Pixabay API request failed: {exc}") from exc
+        raise RuntimeError(f"Jamendo API request failed: {exc}") from exc
 
     data = resp.json()
-    hits = data.get("hits", [])
+    results = data.get("results", [])
 
-    if not hits:
+    if not results:
         raise RuntimeError(
-            f"No music found on Pixabay for mood '{mood}' (query: '{search_query}'). "
-            "Try a different mood or check your API key."
+            f"No music found on Jamendo for mood '{mood}' (tags: '{tags}'). "
+            "Try a different mood or check your Client ID."
         )
 
     # ------------------------------------------------------------------
-    # Step 2: Pick the best track
+    # Step 2: Pick the best track with a download URL
     # ------------------------------------------------------------------
-    # Prefer tracks that have a direct audio download URL.
-    track = hits[0]
-    audio_url = track.get("previewURL") or track.get("videos", {}).get("medium", {}).get("url")
+    track = None
+    audio_url = None
 
-    if not audio_url:
-        # Fallback: try other hits
-        for hit in hits[1:]:
-            audio_url = hit.get("previewURL")
-            if audio_url:
-                track = hit
-                break
+    for candidate in results:
+        url = candidate.get("audiodownload") or candidate.get("audio")
+        if url:
+            track = candidate
+            audio_url = url
+            break
 
-    if not audio_url:
+    if not track or not audio_url:
         raise RuntimeError(
-            "Pixabay returned results but none had a downloadable audio URL."
+            "Jamendo returned results but none had a downloadable audio URL."
         )
 
     # ------------------------------------------------------------------
     # Step 3: Download the track
     # ------------------------------------------------------------------
-    # Determine file extension from URL or default to .mp3
-    ext = ".mp3"
-    if ".wav" in audio_url:
-        ext = ".wav"
-
-    output_file = output_dir / f"background_music{ext}"
+    output_file = output_dir / "background_music.mp3"
 
     logger.info(
-        "Downloading track: '%s' (id=%s) → %s",
-        track.get("tags", "unknown"),
+        "Downloading track: '%s' by '%s' (id=%s) → %s",
+        track.get("name", "unknown"),
+        track.get("artist_name", "unknown"),
         track.get("id", "?"),
         output_file,
     )
