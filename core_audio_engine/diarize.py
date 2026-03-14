@@ -71,8 +71,6 @@ def diarize_speakers(
     RuntimeError
         If diarization produces fewer than 2 speakers.
     """
-    # Lazy-import pyannote so the module can be imported even when the heavy
-    # dependencies are not installed (useful for testing / IDE introspection).
     from pyannote.audio import Pipeline  # noqa: E402
 
     audio_path = Path(audio_path)
@@ -95,7 +93,7 @@ def diarize_speakers(
     logger.info("Loading pyannote speaker-diarization pipeline …")
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=token,
+        token=token,
     )
 
     # --- Run diarization ---------------------------------------------------
@@ -118,7 +116,6 @@ def diarize_speakers(
         )
 
     # --- Extract audio for the two most prominent speakers ----------------
-    # Rank speakers by total speaking time and pick the top two.
     ranked = sorted(
         detected,
         key=lambda s: sum(end - start for start, end in speaker_segments[s]),
@@ -133,9 +130,6 @@ def diarize_speakers(
         tag = "A" if idx == 0 else "B"
         segments = speaker_segments[speaker_label]
 
-        # Build a silent canvas the same length as the original audio, then
-        # overlay each speaker segment at its correct position.  This keeps
-        # timing intact so the files can be re-mixed later.
         canvas = AudioSegment.silent(duration=len(full_audio), frame_rate=full_audio.frame_rate)
 
         for seg_start, seg_end in segments:
