@@ -14,6 +14,7 @@ Run the server:
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -36,10 +37,14 @@ app = FastAPI(
     version="0.1.0",
 )
 
-# Allow any frontend origin during development; restrict in production.
+# CORS: use ALLOWED_ORIGINS env var (comma-separated) in production,
+# falls back to allow-all for local development.
+_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*")
+_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -165,3 +170,9 @@ async def download_result(task_id: str):
         media_type="audio/wav",
         filename="radio_show_final.wav",
     )
+
+
+@app.get("/health")
+async def health_check():
+    """Lightweight health probe for container orchestration and load balancers."""
+    return {"status": "ok"}

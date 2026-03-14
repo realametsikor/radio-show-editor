@@ -2,6 +2,10 @@
   command = "npm run build"
   publish = ".next"
 
+# Set NEXT_PUBLIC_API_URL in Netlify's site settings (Site > Environment variables)
+# to point to your deployed backend, e.g. https://api.your-domain.com
+# The frontend components read this at build time via process.env.NEXT_PUBLIC_API_URL.
+
 [dev]
   command = "npm run dev"
   targetPort = 3000

@@ -3,7 +3,7 @@
 # =============================================================================
 # Usage:
 #   docker compose up --build        Start all services
-#   docker compose up -d             Start in background
+#   docker compose up -d             Start in background (production)
 #   docker compose down              Stop and remove containers
 #   docker compose logs -f worker    Follow Celery worker logs
 # =============================================================================
@@ -12,6 +12,7 @@ services:
   # ── Redis (message broker & result backend) ──────────────────────────────
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
     ports:
       - "6379:6379"
     volumes:
@@ -25,23 +26,32 @@ services:
   # ── FastAPI web server ───────────────────────────────────────────────────
   web:
     build: .
-    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers ${WEB_WORKERS:-2}
+    restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
       - upload_data:/app/uploads
     environment:
       - REDIS_URL=redis://redis:6379/0
       - HF_AUTH_TOKEN=${HF_AUTH_TOKEN:-}
       - BACKGROUND_MUSIC_PATH=${BACKGROUND_MUSIC_PATH:-./assets/background_music.wav}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
     depends_on:
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
   # ── Celery worker ───────────────────────────────────────────────────────
   worker:
     build: .
-    command: celery -A tasks worker --loglevel=info --concurrency=2
+    command: celery -A tasks worker --loglevel=info --concurrency=${CELERY_CONCURRENCY:-2}
+    restart: unless-stopped
     volumes:
       - upload_data:/app/uploads
     environment:
