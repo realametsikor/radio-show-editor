@@ -262,3 +262,19 @@ def get_music():
     response = requests.get(url)
     data = response.json()
     return data["results"]
+    
+    import streamlit as st
+import requests
+
+JAMENDO_CLIENT_ID = "94bf5af6"
+
+st.title("🎧 Podcast Background Music")
+
+url = f"https://api.jamendo.com/v3.0/tracks/?client_id={JAMENDO_CLIENT_ID}&format=json&limit=10&tags=ambient"
+
+response = requests.get(url)
+tracks = response.json()["results"]
+
+for track in tracks:
+    st.write(f"**{track['name']}** by {track['artist_name']}")
+    st.audio(track["audio"])
