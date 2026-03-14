@@ -1,6 +1,9 @@
 # =============================================================================
 # Dockerfile — Radio Show Editor Backend (FastAPI + Celery)
 # =============================================================================
+# Shared image for both the FastAPI web service and the Celery worker.
+# Render overrides the CMD via dockerCommand in render.yaml.
+#
 # Build:   docker build -t radio-show-backend .
 # Run:     docker run -p 8000:8000 --env-file .env radio-show-backend
 # =============================================================================
@@ -27,7 +30,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ────────────────────────────────────────────────────────
-COPY main.py tasks.py start.sh ./
+COPY main.py tasks.py ./
+COPY start.sh ./
 COPY core_audio_engine/ ./core_audio_engine/
 
 # Copy assets if they exist (background music, SFX files, etc.)
@@ -46,10 +50,10 @@ USER appuser
 
 # ── Health check ────────────────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# ── Expose API port ─────────────────────────────────────────────────────────
+# ── Expose API port (Render injects $PORT at runtime) ─────────────────────
 EXPOSE 8000
 
-# ── Default entrypoint ──────────────────────────────────────────────────────
+# ── Default entrypoint (Render overrides this via dockerCommand) ───────────
 CMD ["./start.sh"]

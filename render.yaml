@@ -1,0 +1,62 @@
+# =============================================================================
+# render.yaml — Render Blueprint for the Radio Show Editor Backend
+# =============================================================================
+# Defines three services:
+#   1. web       — FastAPI application (public, HTTPS)
+#   2. worker    — Celery background worker (private)
+#   3. redis     — Redis instance (broker + result backend)
+#
+# Deploy via Render Dashboard → "New" → "Blueprint" → select this repo.
+# =============================================================================
+
+services:
+  # ── FastAPI Web Service ──────────────────────────────────────────────────
+  - type: web
+    name: radio-show-api
+    runtime: docker
+    plan: starter
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          name: radio-show-redis
+          type: redis
+          property: connectionString
+      - key: ALLOWED_ORIGINS
+        value: https://radio-show-editor.vercel.app
+      - key: HF_AUTH_TOKEN
+        sync: false  # You will be prompted to enter this secret manually
+      - key: BACKGROUND_MUSIC_PATH
+        value: ./assets/background_music.wav
+    dockerCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: upload-data
+      mountPath: /app/uploads
+      sizeGB: 1
+
+  # ── Celery Worker Service ────────────────────────────────────────────────
+  - type: worker
+    name: radio-show-worker
+    runtime: docker
+    plan: starter
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          name: radio-show-redis
+          type: redis
+          property: connectionString
+      - key: HF_AUTH_TOKEN
+        sync: false
+      - key: BACKGROUND_MUSIC_PATH
+        value: ./assets/background_music.wav
+    dockerCommand: celery -A tasks worker --loglevel=info --concurrency=2
+    disk:
+      name: worker-upload-data
+      mountPath: /app/uploads
+      sizeGB: 1
+
+# ── Redis Instance ───────────────────────────────────────────────────────
+databases:
+  - name: radio-show-redis
+    plan: starter
+    ipAllowList: []  # Only allow internal connections

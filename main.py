@@ -38,8 +38,11 @@ app = FastAPI(
 )
 
 # CORS: use ALLOWED_ORIGINS env var (comma-separated) in production,
-# falls back to allow-all for local development.
-_raw_origins = os.environ.get("ALLOWED_ORIGINS", "*")
+# falls back to the Vercel frontend for safety.
+_raw_origins = os.environ.get(
+    "ALLOWED_ORIGINS",
+    "https://radio-show-editor.vercel.app",
+)
 _origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
