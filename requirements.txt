@@ -4,10 +4,6 @@ uvicorn[standard]>=0.29,<1
 python-multipart>=0.0.9
 aiofiles>=23.2,<25
 
-# Task queue
-celery[redis]>=5.3,<6
-redis>=5.0,<6
-
 # Audio processing
 pydub>=0.25
 ffmpeg-python>=0.2.0

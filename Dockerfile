@@ -1,11 +1,11 @@
 # =============================================================================
-# Dockerfile — Radio Show Editor Backend (FastAPI + Celery)
+# Dockerfile — Radio Show Editor Backend (Hugging Face Docker Space)
 # =============================================================================
-# Shared image for both the FastAPI web service and the Celery worker.
-# Render overrides the CMD via dockerCommand in render.yaml.
+# Optimized for Hugging Face Spaces which provides 16 GB RAM on the free tier.
+# HF Spaces require port 7860 and a non-root user.
 #
 # Build:   docker build -t radio-show-backend .
-# Run:     docker run -p 8000:8000 --env-file .env radio-show-backend
+# Run:     docker run -p 7860:7860 --env-file .env radio-show-backend
 # =============================================================================
 
 FROM python:3.11-slim
@@ -30,30 +30,25 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ────────────────────────────────────────────────────────
-COPY main.py tasks.py ./
-COPY start.sh ./
+COPY main.py ./
 COPY core_audio_engine/ ./core_audio_engine/
 
 # Copy assets if they exist (background music, SFX files, etc.)
 COPY assets/ ./assets/
 
-# ── Prepare entrypoint ──────────────────────────────────────────────────────
-RUN chmod +x start.sh
-
-# ── Create uploads directory & non-root user ────────────────────────────────
-RUN groupadd --gid 1000 appuser && \
-    useradd --uid 1000 --gid appuser --shell /bin/bash --create-home appuser && \
+# ── Create uploads directory & non-root user (required by HF Spaces) ───────
+RUN useradd -m -u 1000 user && \
     mkdir -p /app/uploads && \
-    chown -R appuser:appuser /app
+    chown -R user:user /app
 
-USER appuser
+USER user
 
 # ── Health check ────────────────────────────────────────────────────────────
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+    CMD curl -f http://localhost:7860/health || exit 1
 
-# ── Expose API port (Render injects $PORT at runtime) ─────────────────────
-EXPOSE 8000
+# ── Hugging Face Spaces requires port 7860 ─────────────────────────────────
+EXPOSE 7860
 
-# ── Default entrypoint (Render overrides this via dockerCommand) ───────────
-CMD ["./start.sh"]
+# ── Start Uvicorn on port 7860 ──────────────────────────────────────────────
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]

@@ -7,8 +7,11 @@ Provides three endpoints:
     GET    /status/{task_id}  Poll task progress → PENDING / PROCESSING / SUCCESS / FAILURE
     GET    /download/{task_id}  Download the final mixed .wav file
 
+Designed for deployment on Hugging Face Spaces (Docker, port 7860).
+Uses FastAPI BackgroundTasks with an in-memory dict instead of Celery/Redis.
+
 Run the server:
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000
+    uvicorn main:app --host 0.0.0.0 --port 7860
 """
 
 from __future__ import annotations
@@ -19,14 +22,18 @@ import uuid
 from pathlib import Path
 
 import aiofiles
-from celery.result import AsyncResult
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
-from tasks import celery_app, process_audio_task
-
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# In-memory task store
+# ---------------------------------------------------------------------------
+# Tracks task status across the lifetime of the process.
+# Structure: { task_id: {"status": str, "result_file": str|None, "error": str|None} }
+tasks: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # App Setup
@@ -34,7 +41,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="Radio Show Editor API",
     description="Upload a podcast, let the pipeline process it, download the finished radio show.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 # CORS: use ALLOWED_ORIGINS env var (comma-separated) in production,
@@ -62,14 +69,63 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
+# Background processing function
+# ---------------------------------------------------------------------------
+def process_audio(task_id: str, file_path: str) -> None:
+    """Run the full pipeline in a background thread.
+
+    Updates the in-memory ``tasks`` dict so the /status endpoint can
+    report progress.
+    """
+    from core_audio_engine.engine import run_pipeline
+
+    tasks[task_id]["status"] = "PROCESSING"
+
+    fp = Path(file_path)
+    if not fp.is_file():
+        tasks[task_id]["status"] = "FAILURE"
+        tasks[task_id]["error"] = f"Uploaded file not found: {fp}"
+        return
+
+    output_dir = fp.parent / "output"
+    output_file = fp.parent / "radio_show_final.wav"
+
+    music_path = os.environ.get(
+        "BACKGROUND_MUSIC_PATH",
+        str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
+    )
+
+    logger.info("Starting pipeline for %s (task %s)", fp, task_id)
+
+    try:
+        final_path = run_pipeline(
+            raw_audio=str(fp),
+            music_path=music_path,
+            output_path=str(output_file),
+            output_dir=str(output_dir),
+            hf_token=os.environ.get("HF_AUTH_TOKEN"),
+        )
+        tasks[task_id]["status"] = "SUCCESS"
+        tasks[task_id]["result_file"] = str(final_path)
+        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
+    except Exception as exc:
+        logger.exception("Pipeline failed for %s (task %s)", fp, task_id)
+        tasks[task_id]["status"] = "FAILURE"
+        tasks[task_id]["error"] = str(exc)
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 @app.post("/upload")
-async def upload_audio(file: UploadFile = File(...)):
+async def upload_audio(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+):
     """Accept an audio file upload, save it to disk, and dispatch the
-    processing task to Celery.
+    processing task as a background job.
 
-    Returns ``{"task_id": "<celery-task-id>"}`` immediately.
+    Returns ``{"task_id": "<uuid>"}`` immediately.
     """
     # Validate content type
     if file.content_type and not file.content_type.startswith("audio/"):
@@ -79,8 +135,8 @@ async def upload_audio(file: UploadFile = File(...)):
         )
 
     # Create a unique directory for this job
-    job_id = uuid.uuid4().hex
-    job_dir = UPLOAD_DIR / job_id
+    task_id = uuid.uuid4().hex
+    job_dir = UPLOAD_DIR / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
     # Preserve original filename or fall back to a safe default
@@ -106,10 +162,11 @@ async def upload_audio(file: UploadFile = File(...)):
 
     logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
 
-    # Dispatch the Celery task
-    task = process_audio_task.delay(str(file_path.resolve()))
+    # Register task and dispatch background processing
+    tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None}
+    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()))
 
-    return {"task_id": task.id}
+    return {"task_id": task_id}
 
 
 @app.get("/status/{task_id}")
@@ -117,50 +174,40 @@ async def get_status(task_id: str):
     """Check the current state of a processing task.
 
     Possible states:
-        - PENDING: Task is queued but not yet picked up by a worker.
+        - PENDING: Task is queued but not yet started.
         - PROCESSING: Task is actively running.
-        - SUCCESS: Task finished; the result is the output file path.
+        - SUCCESS: Task finished; the result file is ready for download.
         - FAILURE: Task failed; an error message is included.
     """
-    result = AsyncResult(task_id, app=celery_app)
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found.")
 
-    if result.state == "PENDING":
-        return {"task_id": task_id, "status": "PENDING"}
+    entry = tasks[task_id]
+    response: dict = {"task_id": task_id, "status": entry["status"]}
 
-    if result.state == "PROCESSING":
-        return {"task_id": task_id, "status": "PROCESSING"}
+    if entry["status"] == "SUCCESS":
+        response["result_file"] = entry["result_file"]
+    elif entry["status"] == "FAILURE":
+        response["error"] = entry["error"] or "Unknown error"
 
-    if result.state == "SUCCESS":
-        return {
-            "task_id": task_id,
-            "status": "SUCCESS",
-            "result_file": result.result,
-        }
-
-    if result.state == "FAILURE":
-        error_msg = str(result.result) if result.result else "Unknown error"
-        return {
-            "task_id": task_id,
-            "status": "FAILURE",
-            "error": error_msg,
-        }
-
-    # Any other Celery state (STARTED, RETRY, etc.)
-    return {"task_id": task_id, "status": result.state}
+    return response
 
 
 @app.get("/download/{task_id}")
 async def download_result(task_id: str):
     """Serve the final mixed .wav file if the task completed successfully."""
-    result = AsyncResult(task_id, app=celery_app)
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found.")
 
-    if result.state != "SUCCESS":
+    entry = tasks[task_id]
+
+    if entry["status"] != "SUCCESS":
         raise HTTPException(
             status_code=400,
-            detail=f"Task is not complete yet. Current status: {result.state}",
+            detail=f"Task is not complete yet. Current status: {entry['status']}",
         )
 
-    output_path = Path(result.result)
+    output_path = Path(entry["result_file"])
 
     if not output_path.is_file():
         raise HTTPException(
