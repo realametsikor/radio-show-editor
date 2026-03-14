@@ -1,0 +1,20 @@
+# Radio Show Editor — Core Audio Engine Dependencies
+
+# Audio manipulation and segment operations
+pydub>=0.25.1
+
+# Programmatic FFmpeg pipeline construction
+ffmpeg-python>=0.2.0
+
+# Speaker diarization (requires a HuggingFace auth token for gated models)
+pyannote.audio>=3.1
+
+# OpenAI Whisper for speech-to-text transcription
+openai-whisper>=20231117
+
+# Torch is required by both pyannote.audio and whisper
+torch>=2.0
+
+# FFmpeg system binary is also required — install via:
+#   Ubuntu/Debian:  sudo apt-get install ffmpeg
+#   macOS:          brew install ffmpeg

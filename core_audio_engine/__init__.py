@@ -1,0 +1,17 @@
+"""
+core_audio_engine — Radio Show Editor Core Audio Engine
+=======================================================
+Modular audio processing pipeline for AI-generated podcast post-production.
+"""
+
+from core_audio_engine.diarize import diarize_speakers
+from core_audio_engine.sfx import apply_sfx
+from core_audio_engine.mixer import mix_with_ducking
+from core_audio_engine.engine import run_pipeline
+
+__all__ = [
+    "diarize_speakers",
+    "apply_sfx",
+    "mix_with_ducking",
+    "run_pipeline",
+]
