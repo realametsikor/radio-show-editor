@@ -17,3 +17,6 @@ torchaudio>=2.0
 # Utility
 soundfile>=0.12
 librosa>=0.10
+
+# External APIs
+requests>=2.31.0
