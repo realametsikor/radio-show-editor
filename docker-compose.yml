@@ -1,0 +1,57 @@
+# =============================================================================
+# docker-compose.yml — Radio Show Editor Backend Stack
+# =============================================================================
+# Usage:
+#   docker compose up --build        Start all services
+#   docker compose up -d             Start in background
+#   docker compose down              Stop and remove containers
+#   docker compose logs -f worker    Follow Celery worker logs
+# =============================================================================
+
+services:
+  # ── Redis (message broker & result backend) ──────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI web server ───────────────────────────────────────────────────
+  web:
+    build: .
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - upload_data:/app/uploads
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - HF_AUTH_TOKEN=${HF_AUTH_TOKEN:-}
+      - BACKGROUND_MUSIC_PATH=${BACKGROUND_MUSIC_PATH:-./assets/background_music.wav}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # ── Celery worker ───────────────────────────────────────────────────────
+  worker:
+    build: .
+    command: celery -A tasks worker --loglevel=info --concurrency=2
+    volumes:
+      - upload_data:/app/uploads
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - HF_AUTH_TOKEN=${HF_AUTH_TOKEN:-}
+      - BACKGROUND_MUSIC_PATH=${BACKGROUND_MUSIC_PATH:-./assets/background_music.wav}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
+  upload_data:
