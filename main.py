@@ -40,9 +40,24 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
+ALLOWED_CONTENT_TYPES = {
+    "audio/wav",
+    "audio/mpeg",
+    "audio/mp4",
+    "audio/aac",
+    "audio/m4a",
+    "audio/x-m4a",
+    "audio/ogg",
+    "video/mp4",
+    "application/octet-stream",
+}
+
+ALLOWED_EXTENSIONS = {
+    ".wav", ".mp3", ".mp4", ".m4a", ".aac", ".ogg"
+}
+
 
 def set_progress(task_id: str, message: str) -> None:
-    """Update task progress message."""
     if task_id in tasks:
         tasks[task_id]["progress"] = message
         logger.info("[%s] %s", task_id[:8], message)
@@ -64,7 +79,7 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     output_dir = job_dir / "output"
     output_file = job_dir / "radio_show_final.wav"
 
-    # ── Re-encode to clean WAV ─────────────────────────────────────────
+    # Re-encode to clean 44100Hz mono WAV
     set_progress(task_id, "🔄 Re-encoding audio to clean WAV format...")
     clean_path = job_dir / "clean_upload.wav"
     try:
@@ -90,7 +105,7 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
         audio_to_process = original_fp
 
-    # ── Resolve background music ───────────────────────────────────────
+    # Resolve background music
     set_progress(task_id, f"🎵 Fetching '{mood}' background music...")
     music_path: str | None = None
 
@@ -114,11 +129,10 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
         set_progress(task_id, "✅ Using default background music")
 
-    # ── Run full pipeline ──────────────────────────────────────────────
+    # Run full pipeline
     try:
         set_progress(task_id, "🎙️ Loading AI speaker diarization model...")
 
-        # Patch pipeline steps to emit live progress
         import core_audio_engine.diarize as diarize_mod
         import core_audio_engine.enhance as enhance_mod
         import core_audio_engine.sfx as sfx_mod
@@ -210,17 +224,28 @@ async def upload_audio(
     file: UploadFile = File(...),
     mood: str = Form(""),
 ):
-    if file.content_type and not file.content_type.startswith("audio/"):
+    # Validate by extension as fallback
+    filename = file.filename or ""
+    ext = Path(filename).suffix.lower()
+
+    content_type_ok = (
+        not file.content_type
+        or file.content_type in ALLOWED_CONTENT_TYPES
+        or file.content_type.startswith("audio/")
+    )
+    extension_ok = ext in ALLOWED_EXTENSIONS or ext == ""
+
+    if not content_type_ok and not extension_ok:
         raise HTTPException(
             status_code=400,
-            detail=f"Expected an audio file, got '{file.content_type}'.",
+            detail=f"Unsupported format '{file.content_type}'. Please upload WAV, MP3, MP4, M4A or AAC.",
         )
 
     task_id = uuid.uuid4().hex
     job_dir = UPLOAD_DIR / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = file.filename or "upload.wav"
+    safe_name = filename or "upload.wav"
     file_path = job_dir / safe_name
 
     total_bytes = 0
