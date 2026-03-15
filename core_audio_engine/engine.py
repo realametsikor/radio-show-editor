@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -15,6 +16,7 @@ def run_pipeline(
     output_dir: str | Path = "output",
     *,
     hf_token: Optional[str] = None,
+    mood: str = "",
 ) -> Path:
     import whisper
     from pydub import AudioSegment, effects
@@ -38,6 +40,7 @@ def run_pipeline(
         output_dir=output_dir,
         hf_token=hf_token,
     )
+    logger.info("Diarization complete: %s, %s", host_a, host_b)
 
     # ── Step 2: Enhance each speaker's voice ───────────────────────────
     logger.info("Step 2/7 — Enhancing voice quality …")
@@ -55,6 +58,7 @@ def run_pipeline(
         combined = audio_a.overlay(audio_b)
         combined = effects.normalize(combined)
         combined.export(str(combined_path), format="wav")
+        logger.info("Combined both speakers → %s", combined_path)
     except Exception as exc:
         logger.warning("Combine failed: %s", exc)
         shutil.copy(str(host_a_enhanced), str(combined_path))
@@ -65,7 +69,11 @@ def run_pipeline(
     transcript = ""
     try:
         model = whisper.load_model("small")
-        result = model.transcribe(str(combined_path), word_timestamps=True, language="en")
+        result = model.transcribe(
+            str(combined_path),
+            word_timestamps=True,
+            language="en"
+        )
         transcript = result.get("text", "")
         for seg in result.get("segments", []):
             for w in seg.get("words", []):
@@ -75,11 +83,14 @@ def run_pipeline(
                     "end": w.get("end", 0),
                 })
         logger.info("Transcribed %d words", len(words))
+        logger.info("Transcript preview: %s", transcript[:200])
     except Exception as exc:
         logger.warning("Transcription failed: %s", exc)
 
-    available_sfx = ["applause", "laugh", "dramatic", "cash", "shock",
-                     "success", "fail", "transition", "crowd_wow", "rimshot"]
+    available_sfx = [
+        "applause", "laugh", "dramatic", "cash", "shock",
+        "success", "fail", "transition", "crowd_wow", "rimshot"
+    ]
 
     audio_duration = len(AudioSegment.from_wav(str(combined_path))) / 1000.0
 
@@ -88,9 +99,12 @@ def run_pipeline(
         words=words,
         audio_duration=audio_duration,
         available_sfx=available_sfx,
+        mood=mood,
     )
 
     logger.info("Show title: %s", production_plan.get("show_title", "Radio Show"))
+    logger.info("Tagline: %s", production_plan.get("show_tagline", ""))
+    logger.info("Summary: %s", production_plan.get("show_summary", ""))
 
     # ── Step 5: Apply SFX ──────────────────────────────────────────────
     logger.info("Step 5/7 — Applying AI-directed sound effects …")
@@ -102,6 +116,7 @@ def run_pipeline(
             sfx_cues=production_plan.get("sfx_cues", []),
         )
         voice_to_mix = combined_sfx_path
+        logger.info("SFX applied successfully")
     except Exception as exc:
         logger.warning("SFX failed: %s", exc)
         voice_to_mix = combined_path
@@ -115,6 +130,7 @@ def run_pipeline(
         output_path=mixed_path,
         music_curve=production_plan.get("music_curve"),
     )
+    logger.info("Mixing complete")
 
     # ── Step 7: Intro + Outro + Master ────────────────────────────────
     logger.info("Step 7/7 — Adding intro/outro and mastering …")
@@ -126,13 +142,16 @@ def run_pipeline(
         gap = AudioSegment.silent(duration=600)
         full = intro + gap + mixed + gap + outro
         full.export(str(pre_master_path), format="wav")
+        logger.info(
+            "Added intro/outro → total duration: %.1fs",
+            len(full) / 1000
+        )
     except Exception as exc:
         logger.warning("Intro/outro failed: %s", exc)
         shutil.copy(str(mixed_path), str(pre_master_path))
 
     # Master to broadcast standard
-    from core_audio_engine.enhance import master_audio
     master_audio(pre_master_path, output_path)
-
     logger.info("🎙️ Pipeline complete → %s", output_path)
+
     return output_path.resolve()
