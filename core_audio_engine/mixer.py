@@ -1,8 +1,11 @@
+"""
+Professional radio mixer — pure pydub, no ffmpeg filter_complex.
+Implements proper sidechain ducking with chunk-based voice activity detection.
+"""
 from __future__ import annotations
 
 import logging
 import shutil
-import subprocess
 from pathlib import Path
 
 from pydub import AudioSegment, effects
@@ -10,16 +13,18 @@ from pydub.silence import detect_nonsilent
 
 logger = logging.getLogger(__name__)
 
+CHUNK_MS = 50  # 50ms chunks for smooth ducking
+
 
 def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
-    """Add subtle breathing room to AI-generated speech."""
+    """Add micro-pauses to AI speech that has no natural breathing room."""
     try:
-        silence_thresh = audio.dBFS - 14
+        thresh = audio.dBFS - 14
         nonsilent = detect_nonsilent(
             audio,
-            min_silence_len=250,
-            silence_thresh=silence_thresh,
-            seek_step=50,
+            min_silence_len=200,
+            silence_thresh=thresh,
+            seek_step=CHUNK_MS,
         )
         if not nonsilent or len(nonsilent) < 2:
             return audio
@@ -28,25 +33,25 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
         prev_end = 0
 
         for i, (start, end) in enumerate(nonsilent):
-            # Add existing gap with slight extension
             if start > prev_end:
                 gap = audio[prev_end:start]
-                if len(gap) < 350:
+                # Extend short gaps slightly for breathing room
+                if len(gap) < 300:
                     gap = gap + AudioSegment.silent(
-                        duration=min(120, len(gap)),
+                        duration=min(100, len(gap)),
                         frame_rate=audio.frame_rate,
                     )
                 result += gap
 
             chunk = audio[start:end]
-            if len(chunk) > 80:
-                chunk = chunk.fade_in(8).fade_out(8)
+            if len(chunk) > 50:
+                chunk = chunk.fade_in(5).fade_out(5)
             result += chunk
 
-            # Micro pause every 4 speech segments
-            if i > 0 and i % 4 == 0 and i < len(nonsilent) - 1:
+            # Add micro-pause every 5 speech bursts
+            if i > 0 and i % 5 == 0 and i < len(nonsilent) - 1:
                 result += AudioSegment.silent(
-                    duration=100,
+                    duration=80,
                     frame_rate=audio.frame_rate,
                 )
             prev_end = end
@@ -54,11 +59,7 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
         if prev_end < len(audio):
             result += audio[prev_end:]
 
-        logger.info(
-            "Pauses: %.1fs → %.1fs",
-            len(audio) / 1000,
-            len(result) / 1000,
-        )
+        logger.info("Pauses: %.1fs → %.1fs", len(audio)/1000, len(result)/1000)
         return result
 
     except Exception as exc:
@@ -66,71 +67,47 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
         return audio
 
 
-def _duck_music_under_voice(
-    music: AudioSegment,
-    voice: AudioSegment,
-    *,
-    music_volume_db: float = -18,
-    ducked_volume_db: float = -32,
-    silence_thresh_offset: float = -14,
-    attack_ms: int = 200,
-    release_ms: int = 600,
-) -> AudioSegment:
+def _detect_voice_activity(voice: AudioSegment, chunk_ms: int = CHUNK_MS) -> list[bool]:
+    """Return list of booleans indicating voice activity per chunk."""
+    thresh = voice.dBFS - 12  # 12dB below mean = silence
+    active = []
+    for i in range(0, len(voice), chunk_ms):
+        chunk = voice[i:i + chunk_ms]
+        is_active = (
+            len(chunk) > 0
+            and chunk.dBFS != float("-inf")
+            and chunk.dBFS > thresh
+        )
+        active.append(is_active)
+    return active
+
+
+def _smooth_activity(activity: list[bool], lookahead: int = 4, lookbehind: int = 2) -> list[bool]:
     """
-    Pure pydub manual ducking:
-    - When voice is speaking: music drops to ducked_volume_db
-    - When voice is silent: music rises to music_volume_db
-    - Smooth transitions between states
+    Smooth voice activity to prevent rapid ducking.
+    Lookahead: start ducking before voice (anticipate)
+    Lookbehind: keep ducked briefly after voice ends (hold)
     """
-    chunk_ms     = 100   # Process in 100ms chunks
-    total_ms     = max(len(music), len(voice))
-    voice_thresh = voice.dBFS + silence_thresh_offset
+    n      = len(activity)
+    smooth = list(activity)
 
-    # Detect voice activity
-    voice_active: list[bool] = []
-    for i in range(0, total_ms, chunk_ms):
-        chunk = voice[i:i + chunk_ms] if i < len(voice) else AudioSegment.silent(duration=chunk_ms)
-        voice_active.append(len(chunk) > 0 and chunk.dBFS > voice_thresh)
+    # Lookahead — if voice starts soon, duck now
+    for i in range(n):
+        if not smooth[i]:
+            for j in range(1, lookahead + 1):
+                if i + j < n and activity[i + j]:
+                    smooth[i] = True
+                    break
 
-    # Build music with dynamic volume
-    result = AudioSegment.silent(duration=total_ms, frame_rate=44100)
+    # Lookbehind — hold duck after voice ends
+    for i in range(n - 1, -1, -1):
+        if not smooth[i]:
+            for j in range(1, lookbehind + 1):
+                if i - j >= 0 and activity[i - j]:
+                    smooth[i] = True
+                    break
 
-    current_db    = music_volume_db
-    target_db     = music_volume_db
-    attack_steps  = max(1, attack_ms  // chunk_ms)
-    release_steps = max(1, release_ms // chunk_ms)
-
-    for i, is_speaking in enumerate(voice_active):
-        pos_ms = i * chunk_ms
-
-        # Set target volume
-        target_db = ducked_volume_db if is_speaking else music_volume_db
-
-        # Smooth transition
-        if target_db < current_db:
-            step      = (target_db - current_db) / attack_steps
-            current_db = max(target_db, current_db + step)
-        elif target_db > current_db:
-            step      = (target_db - current_db) / release_steps
-            current_db = min(target_db, current_db + step)
-
-        # Get music chunk
-        if pos_ms < len(music):
-            chunk = music[pos_ms:pos_ms + chunk_ms]
-            if len(chunk) < chunk_ms:
-                chunk = chunk + AudioSegment.silent(
-                    duration=chunk_ms - len(chunk),
-                    frame_rate=music.frame_rate,
-                )
-        else:
-            chunk = AudioSegment.silent(duration=chunk_ms, frame_rate=44100)
-
-        # Apply volume
-        db_diff = current_db - chunk.dBFS if chunk.dBFS != float("-inf") else 0
-        chunk   = chunk + db_diff
-        result  = result.overlay(chunk, position=pos_ms)
-
-    return result
+    return smooth
 
 
 def mix_with_ducking(
@@ -139,11 +116,22 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    base_music_volume_db: float = -18,
-    ducked_music_volume_db: float = -34,
-    attack_ms: int = 200,
-    release_ms: int = 800,
+    music_full_db: float   = -14,   # Music volume during silence/pauses
+    music_ducked_db: float = -32,   # Music volume when voice is active
+    attack_ms: int         = 150,   # How fast music ducks (ms)
+    release_ms: int        = 600,   # How fast music comes back (ms)
 ) -> Path:
+    """
+    Professional radio mixing with manual chunk-based sidechain ducking.
+
+    Strategy:
+    - Load voice + music separately
+    - Detect voice activity every 50ms
+    - Smoothly lower music when voice is present
+    - Smoothly raise music during pauses (music breathes naturally)
+    - Overlay voice on top at full volume
+    - Master final mix to broadcast standard
+    """
     voice_path  = Path(voice_path)
     music_path  = Path(music_path)
     output_path = Path(output_path)
@@ -155,92 +143,143 @@ def mix_with_ducking(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading voice and music...")
-
-    # Load voice
+    # ── Load voice ─────────────────────────────────────────────────────
+    logger.info("Loading voice...")
     voice = AudioSegment.from_wav(str(voice_path))
 
-    # Add natural pauses
-    try:
-        voice = add_natural_pauses(voice)
-        logger.info("Natural pauses added")
-    except Exception as exc:
-        logger.warning("Pauses failed: %s", exc)
+    # Add natural pauses to AI speech
+    voice = add_natural_pauses(voice)
 
-    voice_duration_ms = len(voice)
+    # Normalize voice to consistent level
+    voice = effects.normalize(voice)
+    # Boost voice slightly for clarity
+    voice = voice + 2
 
-    # Load music
+    voice_ms = len(voice)
+    logger.info("Voice ready: %.1fs dBFS=%.1f", voice_ms/1000, voice.dBFS)
+
+    # ── Load music ─────────────────────────────────────────────────────
+    logger.info("Loading music...")
     try:
         music = AudioSegment.from_file(str(music_path))
-        logger.info("Music loaded: %.1fs", len(music) / 1000)
     except Exception as exc:
-        logger.warning("Music load failed: %s — voice only", exc)
-        voice = effects.normalize(voice)
+        logger.warning("Music load failed: %s — exporting voice only", exc)
+        if voice.channels == 1:
+            voice = voice.set_channels(2)
         voice.export(str(output_path), format="wav")
         return output_path.resolve()
 
-    # Convert to stereo if mono
+    # Ensure stereo music for proper spatial feel
     if music.channels == 1:
         music = music.set_channels(2)
 
-    # Loop music to cover full voice duration + buffer
-    while len(music) < voice_duration_ms + 10000:
+    # Match sample rate
+    if music.frame_rate != 44100:
+        music = music.set_frame_rate(44100)
+
+    # Loop music to cover full voice + buffer
+    target_music_ms = voice_ms + 10000
+    while len(music) < target_music_ms:
         music = music + music
-    music = music[:voice_duration_ms + 8000]
+    music = music[:target_music_ms]
 
     # Normalize music
     music = effects.normalize(music)
+    logger.info("Music ready: %.1fs dBFS=%.1f", len(music)/1000, music.dBFS)
 
+    # ── Voice activity detection ───────────────────────────────────────
+    logger.info("Detecting voice activity...")
+    raw_activity    = _detect_voice_activity(voice, CHUNK_MS)
+    smooth_activity = _smooth_activity(raw_activity, lookahead=6, lookbehind=4)
+
+    speaking_chunks = sum(smooth_activity)
+    total_chunks    = len(smooth_activity)
     logger.info(
-        "Starting manual ducking mix — voice: %.1fs, music: %.1fs",
-        voice_duration_ms / 1000,
-        len(music) / 1000,
+        "Voice activity: %d/%d chunks (%.0f%% speaking)",
+        speaking_chunks, total_chunks,
+        100 * speaking_chunks / max(total_chunks, 1),
     )
 
-    # Apply manual ducking
-    try:
-        ducked_music = _duck_music_under_voice(
-            music,
-            voice,
-            music_volume_db=base_music_volume_db,
-            ducked_volume_db=ducked_music_volume_db,
-            attack_ms=attack_ms,
-            release_ms=release_ms,
-        )
-        logger.info("Ducking applied ✅")
-    except Exception as exc:
-        logger.warning("Ducking failed: %s — using simple volume reduction", exc)
-        ducked_music = music + base_music_volume_db
+    # ── Build ducked music track ───────────────────────────────────────
+    logger.info("Building ducked music track...")
 
-    # Fade music in/out
-    ducked_music = ducked_music.fade_in(2000).fade_out(4000)
+    attack_steps  = max(1, attack_ms  // CHUNK_MS)
+    release_steps = max(1, release_ms // CHUNK_MS)
+    current_db    = music_full_db
+    music_chunks: list[AudioSegment] = []
 
-    # Convert voice to stereo for mixing
+    for i, is_speaking in enumerate(smooth_activity):
+        target_db = music_ducked_db if is_speaking else music_full_db
+
+        # Smooth transition
+        if current_db > target_db:
+            # Ducking — fast attack
+            step       = (current_db - target_db) / attack_steps
+            current_db = max(target_db, current_db - step)
+        elif current_db < target_db:
+            # Releasing — slower release for natural feel
+            step       = (target_db - current_db) / release_steps
+            current_db = min(target_db, current_db + step)
+
+        pos_ms = i * CHUNK_MS
+        if pos_ms < len(music):
+            chunk = music[pos_ms:pos_ms + CHUNK_MS]
+            if len(chunk) == 0:
+                chunk = AudioSegment.silent(duration=CHUNK_MS, frame_rate=44100)
+        else:
+            chunk = AudioSegment.silent(duration=CHUNK_MS, frame_rate=44100)
+
+        # Apply volume — convert dB target to adjustment
+        if chunk.dBFS != float("-inf"):
+            db_adjust = current_db - chunk.dBFS
+            chunk     = chunk + db_adjust
+        else:
+            chunk = chunk + current_db
+
+        music_chunks.append(chunk)
+
+    # Assemble ducked music
+    ducked_music = sum(music_chunks, AudioSegment.empty())
+    logger.info(
+        "Ducked music: %.1fs dBFS=%.1f",
+        len(ducked_music)/1000,
+        ducked_music.dBFS,
+    )
+
+    # ── Fade music in/out ──────────────────────────────────────────────
+    fade_in_ms  = 1500
+    fade_out_ms = 3000
+    ducked_music = ducked_music.fade_in(fade_in_ms).fade_out(fade_out_ms)
+
+    # ── Convert voice to stereo ────────────────────────────────────────
     if voice.channels == 1:
         voice_stereo = voice.set_channels(2)
     else:
         voice_stereo = voice
 
-    # Overlay voice on top of ducked music
-    total_duration_ms = max(len(ducked_music), len(voice_stereo))
-    if len(ducked_music) < total_duration_ms:
-        ducked_music = ducked_music + AudioSegment.silent(
-            duration=total_duration_ms - len(ducked_music),
+    # ── Overlay voice on ducked music ──────────────────────────────────
+    logger.info("Overlaying voice on ducked music...")
+
+    # Pad music to match voice length
+    if len(ducked_music) < len(voice_stereo):
+        padding = AudioSegment.silent(
+            duration=len(voice_stereo) - len(ducked_music),
             frame_rate=44100,
-            channels=2,
-        )
+        ).set_channels(2)
+        ducked_music = ducked_music + padding
 
     mixed = ducked_music.overlay(voice_stereo, position=0)
 
-    # Normalize final mix
+    # ── Final mix processing ───────────────────────────────────────────
+    # Normalize to consistent level
     mixed = effects.normalize(mixed)
 
-    # Export
-    mixed.export(str(output_path), format="wav")
     logger.info(
-        "Mix complete → %.1fs, dBFS=%.1f",
-        len(mixed) / 1000,
+        "Mix complete: %.1fs dBFS=%.1f max=%.1f",
+        len(mixed)/1000,
         mixed.dBFS,
+        mixed.max_dBFS,
     )
 
+    mixed.export(str(output_path), format="wav")
     return output_path.resolve()
