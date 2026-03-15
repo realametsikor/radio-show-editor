@@ -1,12 +1,10 @@
 """Sound effects generation and application for radio show production."""
 from __future__ import annotations
 
-import json
 import logging
-import os
+import math
 import random
 from pathlib import Path
-from typing import Optional
 
 from pydub import AudioSegment, effects, generators
 
@@ -23,7 +21,6 @@ def _tone(freq: float, ms: int, vol: float = 0.3) -> AudioSegment:
     # Convert vol (0-1 linear) to dB attenuation
     if vol <= 0:
         return AudioSegment.silent(duration=ms)
-    import math
     db = 20 * math.log10(max(vol, 0.001))
     return t + db
 
@@ -38,8 +35,7 @@ def _add_room_reverb(audio: AudioSegment, decay_ms: int = 300, wet: float = 0.2)
         if delay < len(audio):
             delayed = AudioSegment.silent(duration=delay) + (audio + attenuation)
             delayed = delayed[:len(audio)]
-            result = result.overlay(delayed * wet + result * (1 - wet) if False else
-                                    result.overlay(delayed, position=0))
+            result = result.overlay(delayed, position=0)
     # Mix wet/dry
     return effects.normalize(result) + (audio.dBFS - effects.normalize(result).dBFS)
 
@@ -452,7 +448,7 @@ def generate_outro(duration_ms: int = 3500, mood: str = "") -> AudioSegment:
 def apply_sfx(
     audio_path: str | Path,
     output_path: str | Path = "audio_with_sfx.wav",
-    sfx_cues: Optional[list[dict]] = None,
+    sfx_cues: list[dict] | None = None,
     sfx_volume_db: float = -10,
 ) -> Path:
     """

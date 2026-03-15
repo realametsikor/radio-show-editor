@@ -57,9 +57,9 @@ SFX_FREQUENCY_MAP = {
 }
 
 MUSIC_PRESENCE_DURING_SPEECH = {
-    "subtle":    0.08,
-    "moderate":  0.14,
-    "prominent": 0.20,
+    "subtle":    0.05,
+    "moderate":  0.10,
+    "prominent": 0.15,
 }
 
 
@@ -129,12 +129,12 @@ CRITICAL RULES:
 3. When in doubt, DO NOT add SFX — less is more
 4. Music should be clearly audible during pauses and quieter during speech
 
-MUSIC CURVE (make music prominent and enjoyable):
-- Music MUST be audible throughout — this is a radio show not a voice recording
-- During speech: intensity {music_during} (still audible, just lower)
-- During pauses/silence: intensity 0.4-0.6 (music swells up nicely)
-- At topic transitions: intensity 0.5-0.7
-- Intro/outro: intensity 0.8-0.9
+MUSIC CURVE (keep music present but always behind the voice):
+- Music should be audible but clearly secondary to the voice
+- During speech: intensity {music_during} (subtle bed under voice)
+- During pauses/silence: intensity 0.25-0.4 (music rises gently)
+- At topic transitions: intensity 0.3-0.5
+- Intro/outro: intensity 0.55-0.7
 
 Respond ONLY with valid JSON:
 {{
@@ -147,10 +147,10 @@ Respond ONLY with valid JSON:
   ],
   "music_curve": [
     {{"timestamp": 0, "intensity": 0.0, "note": "silence"}},
-    {{"timestamp": 1.5, "intensity": 0.85, "note": "intro swell"}},
+    {{"timestamp": 1.5, "intensity": 0.65, "note": "intro swell"}},
     {{"timestamp": 4.5, "intensity": {music_during}, "note": "speech begins"}},
     {{"timestamp": {audio_duration - 4:.1f}, "intensity": {music_during}, "note": "near end"}},
-    {{"timestamp": {audio_duration - 1.5:.1f}, "intensity": 0.75, "note": "outro swell"}},
+    {{"timestamp": {audio_duration - 1.5:.1f}, "intensity": 0.55, "note": "outro swell"}},
     {{"timestamp": {audio_duration:.1f}, "intensity": 0.0, "note": "end"}}
   ],
   "segments": [
@@ -209,10 +209,10 @@ def _basic_production_plan(
 
     music_curve = [
         {"timestamp": 0,                    "intensity": 0.0,         "note": "silence"},
-        {"timestamp": 1.5,                  "intensity": 0.85,        "note": "intro swell"},
+        {"timestamp": 1.5,                  "intensity": 0.65,        "note": "intro swell"},
         {"timestamp": 4.5,                  "intensity": music_during, "note": "speech"},
         {"timestamp": audio_duration - 4,   "intensity": music_during, "note": "near end"},
-        {"timestamp": audio_duration - 1.5, "intensity": 0.75,        "note": "outro swell"},
+        {"timestamp": audio_duration - 1.5, "intensity": 0.55,        "note": "outro swell"},
         {"timestamp": audio_duration,       "intensity": 0.0,         "note": "end"},
     ]
 
