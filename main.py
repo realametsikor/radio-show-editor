@@ -212,10 +212,22 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             set_progress(task_id, "⚠️ Music fetch failed, using default")
 
     if not music_path:
-        music_path = os.environ.get(
-            "BACKGROUND_MUSIC_PATH",
-            str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
-        )
+        # Try multiple fallback filenames since the asset may have different extensions
+        assets_dir = Path(__file__).resolve().parent / "assets"
+        fallback_candidates = [
+            os.environ.get("BACKGROUND_MUSIC_PATH", ""),
+            str(assets_dir / "background_music.wav.mp3"),
+            str(assets_dir / "background_music.wav"),
+            str(assets_dir / "background_music.mp3"),
+        ]
+        for candidate in fallback_candidates:
+            if candidate and Path(candidate).is_file():
+                music_path = candidate
+                break
+
+        if not music_path:
+            music_path = str(assets_dir / "background_music.wav.mp3")
+
         set_progress(task_id, "✅ Using default background music")
 
     # ── Patch pipeline steps for live progress ─────────────────────────
