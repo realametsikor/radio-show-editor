@@ -1,11 +1,7 @@
 # =============================================================================
-# Dockerfile — Radio Show Editor Backend (Hugging Face Docker Space)
+# Dockerfile — Radio Show Editor Backend 
 # =============================================================================
-# Optimized for Hugging Face Spaces which provides 16 GB RAM on the free tier.
-# HF Spaces require port 7860 and a non-root user.
-#
-# Build:   docker build -t radio-show-backend .
-# Run:     docker run -p 7860:7860 --env-file .env radio-show-backend
+# Optimized for dynamic cloud deployment (Railway, RunPod, etc.)
 # =============================================================================
 
 FROM python:3.11-slim
@@ -36,7 +32,7 @@ COPY core_audio_engine/ ./core_audio_engine/
 # Copy assets if they exist (background music, SFX files, etc.)
 COPY assets/ ./assets/
 
-# ── Create uploads directory & non-root user (required by HF Spaces) ───────
+# ── Create uploads directory & non-root user ────────────────────────────────
 RUN useradd -m -u 1000 user && \
     mkdir -p /app/uploads && \
     chown -R user:user /app
@@ -44,11 +40,15 @@ RUN useradd -m -u 1000 user && \
 USER user
 
 # ── Health check ────────────────────────────────────────────────────────────
+# Uses the dynamic port so the health check doesn't fail on Railway
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
-# ── Hugging Face Spaces requires port 7860 ─────────────────────────────────
-EXPOSE 7860
+# ── Dynamic Port Configuration ──────────────────────────────────────────────
+# We set a default of 8000 for local testing, but Railway will override this.
+ENV PORT=8000
+EXPOSE $PORT
 
-# ── Start Uvicorn on port 7860 ──────────────────────────────────────────────
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# ── Start Uvicorn ──────────────────────────────────────────────────────────
+# This command dynamically binds to whatever port Railway assigns!
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
