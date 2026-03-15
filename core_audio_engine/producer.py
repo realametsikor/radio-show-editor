@@ -73,7 +73,7 @@ def analyze_with_claude(
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 
     if not api_key:
-        logger.warning("ANTHROPIC_API_KEY not set — using basic plan with custom SFX")
+        logger.warning("ANTHROPIC_API_KEY not set — using basic plan without SFX")
         return _basic_production_plan(words, audio_duration, available_sfx, mood)
 
     logger.info(
@@ -197,16 +197,17 @@ def _basic_production_plan(
     mood: str = "",
 ) -> dict:
     """
-    Fallback — Modified to guarantee a Radio Intro and Outro drop!
-    Even without an API key, the show will sound professional.
+    Fallback — Zero maintenance mode! 
+    Uses dynamic background music swells for the radio vibe instead of SFX.
     """
-    logger.warning("Basic plan — Using hardcoded Intro/Outro SFX")
+    logger.warning("Basic plan — Using dynamic music curve, no SFX folder needed.")
 
     music_during = MUSIC_PRESENCE_DURING_SPEECH.get(
         SHOW_PERSONALITIES.get(mood, DEFAULT_PERSONALITY).get("music_presence", "moderate"),
         0.14,
     )
 
+    # This creates the "Radio Vibe" by swelling the music at the start and end
     music_curve = [
         {"timestamp": 0,                    "intensity": 0.0,         "note": "silence"},
         {"timestamp": 1.5,                  "intensity": 0.65,        "note": "intro swell"},
@@ -216,30 +217,14 @@ def _basic_production_plan(
         {"timestamp": audio_duration,       "intensity": 0.0,         "note": "end"},
     ]
 
-    # --- OUR GUARANTEED RADIO SFX ---
-    guaranteed_sfx = []
-    if audio_duration > 10:
-        guaranteed_sfx.append({
-            "timestamp": 0.5, 
-            "sfx": "intro_sweep.wav", 
-            "reason": "Radio station intro drop", 
-            "intensity": 0.8
-        })
-        guaranteed_sfx.append({
-            "timestamp": audio_duration - 3.0, 
-            "sfx": "outro_sweep.wav", 
-            "reason": "Radio station outro drop", 
-            "intensity": 0.8
-        })
-
     return {
         "show_title":       mood.replace("_", " ").title() + " Radio Show",
         "show_tagline":     "Your podcast, professionally produced",
         "show_summary":     "A podcast transformed into a professional radio show.",
         "keywords":         [mood, "podcast", "radio"],
-        "sfx_cues":         guaranteed_sfx,
+        "sfx_cues":         [],
         "music_curve":      music_curve,
         "segments":         [],
         "highlights":       [],
-        "production_notes": "Basic plan — Hardcoded Intro/Outro applied."
+        "production_notes": "Basic plan — Music swells applied, zero SFX."
     }
