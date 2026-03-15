@@ -53,11 +53,9 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 def process_audio(task_id: str, file_path: str) -> None:
     try:
-        # 1. IMMEDIATELY tell the frontend we have started!
         tasks[task_id]["status"] = "PROCESSING"
         save_tasks()
 
-        # 2. Safely import the engine inside the try block
         from core_audio_engine.engine import run_pipeline
 
         fp = Path(file_path)
@@ -78,12 +76,10 @@ def process_audio(task_id: str, file_path: str) -> None:
         import random
         chosen_url = random.choice(reliable_music_links)
         
-        # Add a timeout so it doesn't hang forever downloading music
         music_data = requests.get(chosen_url, timeout=15).content
         with open(music_path, "wb") as f:
             f.write(music_data)
 
-        # 3. Run the pipeline
         final_path = run_pipeline(
             raw_audio=str(fp),
             music_path=music_path,
@@ -92,13 +88,11 @@ def process_audio(task_id: str, file_path: str) -> None:
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
         
-        # 4. Success!
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
         save_tasks()
 
     except Exception as exc:
-        # If ANYTHING goes wrong, tell the frontend immediately
         logger.exception("Pipeline failed")
         tasks[task_id]["status"] = "FAILURE"
         tasks[task_id]["error"] = str(exc)
@@ -185,6 +179,12 @@ async def get_recent_shows():
             })
             
     return {"recent_shows": successful_shows}
+
+# --- THE SECRET DEBUG WINDOW ---
+@app.get("/debug")
+async def debug_database():
+    """Shows the raw data so we can see the hidden Python errors."""
+    return tasks
 
 @app.get("/health")
 async def health_check():
