@@ -1,30 +1,8 @@
-"""
-music_fetch.py — Dynamic Background Music Fetcher (Jamendo)
-============================================================
-Fetches royalty-free background music from the Jamendo API based on a
-user-selected mood/vibe tag, then downloads the best matching track into
-the task's working directory.
-
-Jamendo's free tier allows tag-based searching and provides direct MP3
-download URLs — ideal for dynamic background music selection.
-
-Usage:
-    from core_audio_engine.music_fetch import fetch_music_for_mood
-
-    music_path = fetch_music_for_mood(
-        mood="chill",
-        output_dir="/uploads/abc123/",
-    )
-
-Environment:
-    JAMENDO_CLIENT_ID  —  Your Jamendo application Client ID.
-    Sign up at https://developer.jamendo.com/
-"""
-
 from __future__ import annotations
 
 import logging
 import os
+import random
 from pathlib import Path
 from typing import Optional
 
@@ -32,22 +10,15 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Mood → Jamendo tag mapping
-# ---------------------------------------------------------------------------
-# Maps the frontend mood slugs to Jamendo search tags.  Jamendo supports
-# freeform tag strings (space- or plus-separated).
-MOOD_TAG_MAP: dict[str, str] = {
-    "chill": "chill",
-    "lo-fi": "lofi+chill",
-    "upbeat": "upbeat+happy",
-    "news": "corporate+news",
-    "ambient": "ambient+calm",
-    "jazz": "jazz+smooth",
-    "cinematic": "cinematic+epic",
-    "acoustic": "acoustic+guitar",
-    "electronic": "electronic+synth",
-    "suspense": "suspense+dark",
+MOOD_TAG_MAP: dict[str, list[str]] = {
+    "lo-fi":       ["lofi", "chillhop", "chill+study"],
+    "upbeat":      ["upbeat+pop", "happy+energetic", "uplifting"],
+    "news":        ["corporate+news", "background+news", "informational"],
+    "ambient":     ["ambient+calm", "atmospheric", "meditation"],
+    "jazz":        ["jazz+smooth", "lounge+jazz", "bossa+nova"],
+    "cinematic":   ["cinematic+epic", "orchestral", "dramatic+film"],
+    "acoustic":    ["acoustic+guitar", "folk+acoustic", "singer+songwriter"],
+    "electronic":  ["electronic+modern", "synthwave", "chillwave"],
 }
 
 JAMENDO_API_URL = "https://api.jamendo.com/v3.0/tracks/"
@@ -58,81 +29,71 @@ def fetch_music_for_mood(
     output_dir: str | Path,
     client_id: Optional[str] = None,
 ) -> Path:
-    """Search the Jamendo API for a track matching *mood* and download it.
-
-    Parameters
-    ----------
-    mood : str
-        One of the mood keys defined in ``MOOD_TAG_MAP`` (e.g. "chill",
-        "upbeat", "suspense").  Falls back to the raw mood string as a
-        Jamendo tag if the mood is not in the map.
-    output_dir : str | Path
-        Directory to save the downloaded music file into.
-    client_id : str, optional
-        Jamendo application Client ID.  If not provided, reads from the
-        ``JAMENDO_CLIENT_ID`` environment variable.
-
-    Returns
-    -------
-    Path
-        Resolved path to the downloaded music file.
-
-    Raises
-    ------
-    RuntimeError
-        If the Client ID is missing, no results are returned, or the
-        download fails.
-    """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     cid = client_id or os.environ.get("JAMENDO_CLIENT_ID", "")
     if not cid:
-        raise RuntimeError(
-            "Jamendo Client ID not configured. "
-            "Set the JAMENDO_CLIENT_ID environment variable."
-        )
+        raise RuntimeError("JAMENDO_CLIENT_ID not set.")
 
-    # Resolve tag(s) from mood
-    tags = MOOD_TAG_MAP.get(mood, mood)
+    # Try each tag variant until we get results
+    tag_variants = MOOD_TAG_MAP.get(mood, [mood])
+    results = []
 
-    logger.info("Searching Jamendo: mood=%s, tags='%s'", mood, tags)
+    for tags in tag_variants:
+        logger.info("Searching Jamendo: mood=%s tags='%s'", mood, tags)
+        params = {
+            "client_id": cid,
+            "format": "json",
+            "limit": 10,
+            "tags": tags,
+            "audioformat": "mp32",
+            "order": "popularity_total",
+            "include": "musicinfo",
+            # Only instrumental tracks — no vocals over podcast speech
+            "vocalinstrumental": "instrumental",
+        }
 
-    # ------------------------------------------------------------------
-    # Step 1: Search the Jamendo API
-    # ------------------------------------------------------------------
-    params: dict = {
-        "client_id": cid,
-        "format": "json",
-        "limit": 5,
-        "tags": tags,
-        "include": "musicinfo",
-        "audioformat": "mp32",
-        "order": "popularity_total",
-    }
+        try:
+            resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+            if results:
+                logger.info("Found %d tracks for tags '%s'", len(results), tags)
+                break
+        except requests.RequestException as exc:
+            logger.warning("Jamendo request failed for tags '%s': %s", tags, exc)
+            continue
 
-    try:
-        resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Jamendo API request failed: {exc}") from exc
-
-    data = resp.json()
-    results = data.get("results", [])
+    # Fallback without instrumental filter
+    if not results:
+        logger.info("Retrying without instrumental filter...")
+        params = {
+            "client_id": cid,
+            "format": "json",
+            "limit": 10,
+            "tags": tag_variants[0],
+            "audioformat": "mp32",
+            "order": "popularity_total",
+        }
+        try:
+            resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
+            resp.raise_for_status()
+            results = resp.json().get("results", [])
+        except Exception as exc:
+            raise RuntimeError(f"Jamendo API failed: {exc}") from exc
 
     if not results:
-        raise RuntimeError(
-            f"No music found on Jamendo for mood '{mood}' (tags: '{tags}'). "
-            "Try a different mood or check your Client ID."
-        )
+        raise RuntimeError(f"No music found on Jamendo for mood '{mood}'.")
 
-    # ------------------------------------------------------------------
-    # Step 2: Pick the best track with a download URL
-    # ------------------------------------------------------------------
+    # Pick a random track from top 5 for variety
+    top_results = results[:5]
+    random.shuffle(top_results)
+
     track = None
     audio_url = None
 
-    for candidate in results:
+    for candidate in top_results:
         url = candidate.get("audiodownload") or candidate.get("audio")
         if url:
             track = candidate
@@ -140,34 +101,31 @@ def fetch_music_for_mood(
             break
 
     if not track or not audio_url:
-        raise RuntimeError(
-            "Jamendo returned results but none had a downloadable audio URL."
-        )
-
-    # ------------------------------------------------------------------
-    # Step 3: Download the track
-    # ------------------------------------------------------------------
-    output_file = output_dir / "background_music.mp3"
+        raise RuntimeError("No downloadable track found on Jamendo.")
 
     logger.info(
-        "Downloading track: '%s' by '%s' (id=%s) → %s",
+        "Selected: '%s' by '%s'",
         track.get("name", "unknown"),
         track.get("artist_name", "unknown"),
-        track.get("id", "?"),
-        output_file,
     )
+
+    # Download
+    output_file = output_dir / f"background_music_{mood}.mp3"
 
     try:
         dl_resp = requests.get(audio_url, timeout=60, stream=True)
         dl_resp.raise_for_status()
     except requests.RequestException as exc:
-        raise RuntimeError(f"Failed to download music track: {exc}") from exc
+        raise RuntimeError(f"Failed to download track: {exc}") from exc
 
     with open(output_file, "wb") as f:
-        for chunk in dl_resp.iter_content(chunk_size=1024 * 64):
+        for chunk in dl_resp.iter_content(chunk_size=65536):
             f.write(chunk)
 
-    file_size_mb = output_file.stat().st_size / 1_048_576
-    logger.info("Downloaded %.1f MB → %s", file_size_mb, output_file)
+    logger.info(
+        "Downloaded %.1f MB → %s",
+        output_file.stat().st_size / 1_048_576,
+        output_file,
+    )
 
     return output_file.resolve()
