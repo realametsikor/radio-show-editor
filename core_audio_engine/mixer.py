@@ -1,3 +1,20 @@
+"""
+Professional radio mixer using ffmpeg sidechaincompress.
+Optimized for NotebookLM audio (preserves natural AI pacing).
+"""
+from __future__ import annotations
+
+import logging
+import shutil
+import subprocess
+from pathlib import Path
+
+# THIS IS THE MAGIC LINE WE WERE MISSING!
+from pydub import AudioSegment, effects
+
+logger = logging.getLogger(__name__)
+
+
 def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
     """
     Bypassed for NotebookLM: 
@@ -27,10 +44,10 @@ def mix_with_ducking(
     music_curve: list[dict] | None = None,
     *,
     music_volume_db: float = -15.0,  # Raised for a true "Radio Show" energy bed
-    duck_ratio: float      = 8.0,    # Smoother ducking (was 12.0)
-    attack_ms: int         = 80,     # Slightly faster duck to catch them speaking
-    release_ms: int        = 800,    # Faster recovery so music swells nicely during pauses
-    voice_boost_db: float  = 0.0,    # NotebookLM is already perfectly leveled, no boost needed
+    duck_ratio: float      = 8.0,    # Smoother ducking
+    attack_ms: int         = 80,     # Catch them speaking
+    release_ms: int        = 800,    # Faster recovery
+    voice_boost_db: float  = 0.0,    # NotebookLM needs no boost
 ) -> Path:
     """
     Professional radio mix tailored for high-quality NotebookLM audio.
@@ -66,11 +83,7 @@ def mix_with_ducking(
         shutil.copy(str(voice_path), str(output_path))
         return output_path.resolve()
 
-    # Build ffmpeg filter chain tailored for NotebookLM:
-    # 1. Music: stereo → volume setting → warm EQ
-    # 2. Voice: stereo → clean rumble (no harsh EQ) → gentle compression
-    # 3. Sidechain: smooth, musical ducking
-    # 4. Mix: Balanced 1 to 4 ratio
+    # Build ffmpeg filter chain tailored for NotebookLM
     filter_str = (
         f"[0:a]aformat=channel_layouts=stereo,"
         f"volume={music_volume_db}dB,"
@@ -129,3 +142,37 @@ def mix_with_ducking(
             pass
 
     return output_path.resolve()
+
+
+def _pydub_fallback_mix(
+    voice_path: Path,
+    music_path: Path,
+    output_path: Path,
+    music_volume_db: float = -15.0,
+) -> None:
+    """Simple pydub fallback if ffmpeg sidechain fails."""
+    try:
+        logger.info("Using pydub fallback mixer...")
+        voice = AudioSegment.from_wav(str(voice_path))
+        music = AudioSegment.from_file(str(music_path))
+
+        if voice.channels == 1:
+            voice = voice.set_channels(2)
+        if music.channels == 1:
+            music = music.set_channels(2)
+
+        voice = effects.normalize(voice)
+        music = effects.normalize(music) + music_volume_db
+
+        while len(music) < len(voice):
+            music = music + music
+        music = music[:len(voice) + 3000]
+
+        mixed = music.overlay(voice, position=0)
+        mixed = effects.normalize(mixed)
+        mixed.export(str(output_path), format="wav")
+        logger.info("✅ pydub fallback mix complete")
+
+    except Exception as exc:
+        logger.warning("pydub fallback also failed: %s — voice only", exc)
+        shutil.copy(str(voice_path), str(output_path))
