@@ -16,6 +16,16 @@ from pydub.silence import detect_silence
 logger = logging.getLogger(__name__)
 
 
+def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
+    """
+    Bypassed for NotebookLM: 
+    Google's AI already has perfect pacing. 
+    (Kept here to prevent import errors from other files!)
+    """
+    logger.info("Skipping artificial pauses — optimized for NotebookLM.")
+    return audio
+
+
 def create_radio_breaks(voice: AudioSegment) -> AudioSegment:
     """
     Finds natural pauses in the speech and inserts longer silences (breaks).
@@ -55,7 +65,6 @@ def create_radio_breaks(voice: AudioSegment) -> AudioSegment:
     result = voice
     for bp in break_points:
         # Insert 2.5 seconds of pure silence! 
-        # The compressor will release, and music will swell to full volume.
         break_silence = AudioSegment.silent(duration=2500, frame_rate=voice.frame_rate)
         result = result[:bp] + break_silence + result[bp:]
         
