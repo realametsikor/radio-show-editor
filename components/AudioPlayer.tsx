@@ -11,6 +11,7 @@ import {
   SkipBack,
   Radio,
   CheckCircle2,
+  Loader2,
 } from "lucide-react";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -24,10 +25,13 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
   const wavesurferRef = useRef<WaveSurfer | null>(null);
   const [playing, setPlaying] = useState(false);
   const [ready, setReady] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState("0:00");
   const [duration, setDuration] = useState("0:00");
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
+  const blobUrlRef = useRef<string | null>(null);
 
   const formatTime = (seconds: number): string => {
     const m = Math.floor(seconds / 60);
@@ -48,15 +52,37 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
       barRadius: 4,
       height: 80,
       normalize: true,
-      backend: "WebAudio",
     });
 
-    ws.load(`${API_BASE}/download/${taskId}`);
-    ws.setVolume(0.8);
+    wavesurferRef.current = ws;
+
+    // Fetch audio as blob to avoid CORS issues with WebAudio
+    const loadAudio = async () => {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const response = await fetch(`${API_BASE}/download/${taskId}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        blobUrlRef.current = blobUrl;
+
+        ws.load(blobUrl);
+      } catch (err) {
+        setError("Failed to load audio. Please try downloading instead.");
+        setLoading(false);
+      }
+    };
+
+    loadAudio();
 
     ws.on("ready", () => {
       setReady(true);
+      setLoading(false);
       setDuration(formatTime(ws.getDuration()));
+      ws.setVolume(0.8);
     });
 
     ws.on("audioprocess", () => {
@@ -71,18 +97,24 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
       setPlaying(false);
     });
 
-    wavesurferRef.current = ws;
+    ws.on("error", (err) => {
+      setError("Audio playback error. Please download the file.");
+      setLoading(false);
+    });
 
     return () => {
       ws.destroy();
+      if (blobUrlRef.current) {
+        URL.revokeObjectURL(blobUrlRef.current);
+      }
     };
   }, [taskId]);
 
   const togglePlay = useCallback(() => {
-    if (!wavesurferRef.current) return;
+    if (!wavesurferRef.current || !ready) return;
     wavesurferRef.current.playPause();
     setPlaying((prev) => !prev);
-  }, []);
+  }, [ready]);
 
   const handleRestart = useCallback(() => {
     if (!wavesurferRef.current) return;
@@ -154,6 +186,19 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
           }`}
         />
 
+        {/* Loading state */}
+        {loading && !error && (
+          <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500">
+            <Loader2 className="h-3 w-3 animate-spin" />
+            Loading audio...
+          </div>
+        )}
+
+        {/* Error state */}
+        {error && (
+          <div className="mt-3 text-center text-xs text-red-400">{error}</div>
+        )}
+
         {/* Time display */}
         <div className="mt-2 flex justify-between text-xs font-medium text-gray-500">
           <span>{currentTime}</span>
@@ -166,7 +211,6 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
             onClick={handleRestart}
             disabled={!ready}
             className="flex h-10 w-10 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-800 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Restart"
           >
             <SkipBack className="h-4 w-4" />
           </button>
@@ -187,13 +231,8 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
             onClick={toggleMute}
             disabled={!ready}
             className="flex h-10 w-10 items-center justify-center rounded-xl text-gray-400 transition hover:bg-gray-800 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
-            title={muted ? "Unmute" : "Mute"}
           >
-            {muted ? (
-              <VolumeX className="h-4 w-4" />
-            ) : (
-              <Volume2 className="h-4 w-4" />
-            )}
+            {muted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
           </button>
         </div>
 
@@ -207,7 +246,7 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
             step="0.01"
             value={muted ? 0 : volume}
             onChange={handleVolumeChange}
-            className="h-1 w-32 appearance-none rounded-full bg-gray-700 accent-indigo-500 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-indigo-400"
+            className="h-1 w-32 appearance-none rounded-full bg-gray-700 accent-indigo-500"
           />
         </div>
 
@@ -215,8 +254,7 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
         <div className="mt-6 flex justify-center">
           <button
             onClick={handleDownload}
-            disabled={!ready}
-            className="flex items-center gap-2 rounded-xl bg-gray-800 px-6 py-2.5 text-sm font-medium text-gray-200 ring-1 ring-white/10 transition hover:bg-gray-700 hover:text-white disabled:opacity-30 disabled:cursor-not-allowed"
+            className="flex items-center gap-2 rounded-xl bg-gray-800 px-6 py-2.5 text-sm font-medium text-gray-200 ring-1 ring-white/10 transition hover:bg-gray-700 hover:text-white"
           >
             <Download className="h-4 w-4" />
             Download Final Show
