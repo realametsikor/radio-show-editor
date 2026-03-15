@@ -19,11 +19,15 @@ RUN apt-get update && \
 # ── Working directory ────────────────────────────────────────────────────────
 WORKDIR /app
 
-# ── Python dependencies ─────────────────────────────────────────────────────
-# Install requirements first to leverage Docker layer caching.
+# ── Python dependencies (OPTIMIZED FOR SPEED) ───────────────────────────────
 COPY requirements.txt .
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --upgrade pip 
+
+# Force the tiny CPU-only version of PyTorch first to save 3GB of downloading!
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Then install the rest of your app
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ────────────────────────────────────────────────────────
 COPY main.py ./
