@@ -152,7 +152,7 @@ export default function ProcessingStatus({
         </div>
 
         {/* Progress steps */}
-        <div className="space-y-1">
+        <div>
           {STAGES.map((stage, index) => {
             const isActive = index === currentIndex;
             const isComplete = index < currentIndex;
@@ -160,7 +160,7 @@ export default function ProcessingStatus({
             const Icon = stage.icon;
 
             return (
-              <div key={stage.key} className="flex items-start gap-4">
+              <div key={stage.key} className="flex items-stretch gap-4">
                 {/* Timeline rail */}
                 <div className="flex flex-col items-center">
                   <div
@@ -173,9 +173,9 @@ export default function ProcessingStatus({
                     }`}
                   >
                     {isComplete ? (
-                      <CheckCircle2 className="h-4.5 w-4.5 text-green-400" />
+                      <CheckCircle2 className="h-4 w-4 text-green-400" />
                     ) : isActive ? (
-                      <Loader2 className="h-4.5 w-4.5 text-indigo-400 animate-spin" />
+                      <Loader2 className="h-4 w-4 text-indigo-400 animate-spin" />
                     ) : (
                       <Icon
                         className={`h-4 w-4 ${
@@ -186,7 +186,7 @@ export default function ProcessingStatus({
                   </div>
                   {index < STAGES.length - 1 && (
                     <div
-                      className={`w-px h-5 transition-colors duration-500 ${
+                      className={`w-px flex-1 my-1 transition-colors duration-500 ${
                         isComplete ? "bg-green-500/30" : "bg-gray-800"
                       }`}
                     />
@@ -194,7 +194,7 @@ export default function ProcessingStatus({
                 </div>
 
                 {/* Text */}
-                <div className="pt-1.5 pb-3">
+                <div className="pt-1.5 pb-5">
                   <p
                     className={`text-sm font-medium transition-colors duration-300 ${
                       isComplete
