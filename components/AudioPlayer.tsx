@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
-import WaveSurfer from "wavesurfer.js";
 import {
   Play,
   Pause,
@@ -21,105 +20,71 @@ interface AudioPlayerProps {
 }
 
 export default function AudioPlayer({ taskId }: AudioPlayerProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const wavesurferRef = useRef<WaveSurfer | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [currentTime, setCurrentTime] = useState("0:00");
-  const [duration, setDuration] = useState("0:00");
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [volume, setVolume] = useState(0.8);
   const [muted, setMuted] = useState(false);
-  const blobUrlRef = useRef<string | null>(null);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
   const formatTime = (seconds: number): string => {
+    if (!seconds || isNaN(seconds)) return "0:00";
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
+  // Fetch audio as blob to avoid CORS issues
   useEffect(() => {
-    if (!containerRef.current) return;
+    let objectUrl: string | null = null;
 
-    const ws = WaveSurfer.create({
-      container: containerRef.current,
-      waveColor: "#4f46e5",
-      progressColor: "#818cf8",
-      cursorColor: "#c7d2fe",
-      barWidth: 3,
-      barGap: 2,
-      barRadius: 4,
-      height: 80,
-      normalize: true,
-    });
-
-    wavesurferRef.current = ws;
-
-    // Fetch audio as blob to avoid CORS issues with WebAudio
     const loadAudio = async () => {
       try {
         setLoading(true);
         setError(null);
-
-        const response = await fetch(`${API_BASE}/download/${taskId}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-        const blob = await response.blob();
-        const blobUrl = URL.createObjectURL(blob);
-        blobUrlRef.current = blobUrl;
-
-        ws.load(blobUrl);
+        const res = await fetch(`${API_BASE}/download/${taskId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const blob = await res.blob();
+        objectUrl = URL.createObjectURL(blob);
+        setBlobUrl(objectUrl);
       } catch (err) {
-        setError("Failed to load audio. Please try downloading instead.");
+        setError("Failed to load audio.");
         setLoading(false);
       }
     };
 
     loadAudio();
 
-    ws.on("ready", () => {
-      setReady(true);
-      setLoading(false);
-      setDuration(formatTime(ws.getDuration()));
-      ws.setVolume(0.8);
-    });
-
-    ws.on("audioprocess", () => {
-      setCurrentTime(formatTime(ws.getCurrentTime()));
-    });
-
-    ws.on("seeking", () => {
-      setCurrentTime(formatTime(ws.getCurrentTime()));
-    });
-
-    ws.on("finish", () => {
-      setPlaying(false);
-    });
-
-    ws.on("error", (err) => {
-      setError("Audio playback error. Please download the file.");
-      setLoading(false);
-    });
-
     return () => {
-      ws.destroy();
-      if (blobUrlRef.current) {
-        URL.revokeObjectURL(blobUrlRef.current);
-      }
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [taskId]);
 
-  const togglePlay = useCallback(() => {
-    if (!wavesurferRef.current || !ready) return;
-    wavesurferRef.current.playPause();
-    setPlaying((prev) => !prev);
-  }, [ready]);
+  const togglePlay = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio || !ready) return;
+    if (playing) {
+      audio.pause();
+      setPlaying(false);
+    } else {
+      try {
+        await audio.play();
+        setPlaying(true);
+      } catch (err) {
+        setError("Playback blocked. Try tapping play again.");
+      }
+    }
+  }, [playing, ready]);
 
   const handleRestart = useCallback(() => {
-    if (!wavesurferRef.current) return;
-    wavesurferRef.current.seekTo(0);
-    setCurrentTime("0:00");
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.currentTime = 0;
+    setCurrentTime(0);
   }, []);
 
   const handleVolumeChange = useCallback(
@@ -127,20 +92,19 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
       const val = parseFloat(e.target.value);
       setVolume(val);
       setMuted(val === 0);
-      if (wavesurferRef.current) {
-        wavesurferRef.current.setVolume(val);
-      }
+      if (audioRef.current) audioRef.current.volume = val;
     },
     []
   );
 
   const toggleMute = useCallback(() => {
-    if (!wavesurferRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
     if (muted) {
-      wavesurferRef.current.setVolume(volume || 0.8);
+      audio.volume = volume || 0.8;
       setMuted(false);
     } else {
-      wavesurferRef.current.setVolume(0);
+      audio.volume = 0;
       setMuted(true);
     }
   }, [muted, volume]);
@@ -154,8 +118,30 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
     document.body.removeChild(link);
   }, [taskId]);
 
+  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+
   return (
     <div className="w-full max-w-2xl mx-auto">
+      {/* Hidden native audio element */}
+      {blobUrl && (
+        <audio
+          ref={audioRef}
+          src={blobUrl}
+          preload="auto"
+          onCanPlayThrough={() => {
+            setReady(true);
+            setLoading(false);
+          }}
+          onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
+          onDurationChange={() => setDuration(audioRef.current?.duration || 0)}
+          onEnded={() => setPlaying(false)}
+          onError={() => {
+            setError("Playback error. Please download the file.");
+            setLoading(false);
+          }}
+        />
+      )}
+
       <div className="glass-card rounded-2xl p-8">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
@@ -164,12 +150,8 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
               <Radio className="h-5 w-5 text-green-400" />
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-white">
-                Your Radio Show
-              </h2>
-              <p className="text-xs text-gray-500">
-                Processed and ready to broadcast
-              </p>
+              <h2 className="text-lg font-semibold text-white">Your Radio Show</h2>
+              <p className="text-xs text-gray-500">Processed and ready to broadcast</p>
             </div>
           </div>
           <div className="flex items-center gap-1.5 rounded-full bg-green-500/10 px-3 py-1 text-xs font-medium text-green-400 ring-1 ring-green-500/20">
@@ -178,31 +160,48 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
           </div>
         </div>
 
-        {/* Waveform */}
-        <div
-          ref={containerRef}
-          className={`rounded-xl bg-surface-50 p-4 ring-1 ring-white/5 transition-opacity duration-500 ${
-            ready ? "opacity-100" : "opacity-30"
-          }`}
-        />
-
-        {/* Loading state */}
-        {loading && !error && (
-          <div className="mt-3 flex items-center justify-center gap-2 text-xs text-gray-500">
-            <Loader2 className="h-3 w-3 animate-spin" />
-            Loading audio...
-          </div>
-        )}
-
-        {/* Error state */}
-        {error && (
-          <div className="mt-3 text-center text-xs text-red-400">{error}</div>
-        )}
+        {/* Progress bar */}
+        <div className="rounded-xl bg-gray-900 p-4 ring-1 ring-white/5">
+          {loading && (
+            <div className="flex items-center justify-center gap-2 py-6 text-xs text-gray-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading audio...
+            </div>
+          )}
+          {!loading && !error && (
+            <>
+              {/* Clickable progress bar */}
+              <div
+                className="relative h-2 w-full cursor-pointer rounded-full bg-gray-700"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const pct = x / rect.width;
+                  if (audioRef.current) {
+                    audioRef.current.currentTime = pct * duration;
+                  }
+                }}
+              >
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-100"
+                  style={{ width: `${progress}%` }}
+                />
+                <div
+                  className="absolute top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-indigo-400 shadow-lg transition-all duration-100"
+                  style={{ left: `calc(${progress}% - 8px)` }}
+                />
+              </div>
+            </>
+          )}
+          {error && (
+            <p className="py-4 text-center text-xs text-red-400">{error}</p>
+          )}
+        </div>
 
         {/* Time display */}
         <div className="mt-2 flex justify-between text-xs font-medium text-gray-500">
-          <span>{currentTime}</span>
-          <span>{duration}</span>
+          <span>{formatTime(currentTime)}</span>
+          <span>{formatTime(duration)}</span>
         </div>
 
         {/* Playback controls */}
@@ -218,13 +217,9 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
           <button
             onClick={togglePlay}
             disabled={!ready}
-            className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 text-white transition btn-glow hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed disabled:shadow-none"
+            className="flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-600 text-white transition btn-glow hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed"
           >
-            {playing ? (
-              <Pause className="h-6 w-6" />
-            ) : (
-              <Play className="h-6 w-6 ml-0.5" />
-            )}
+            {playing ? <Pause className="h-6 w-6" /> : <Play className="h-6 w-6 ml-0.5" />}
           </button>
 
           <button
@@ -250,7 +245,7 @@ export default function AudioPlayer({ taskId }: AudioPlayerProps) {
           />
         </div>
 
-        {/* Download button */}
+        {/* Download */}
         <div className="mt-6 flex justify-center">
           <button
             onClick={handleDownload}
