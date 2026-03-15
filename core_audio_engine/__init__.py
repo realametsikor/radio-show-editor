@@ -1,4 +1,3 @@
-"""
 core_audio_engine — Radio Show Editor Core Audio Engine
 =======================================================
 Modular audio processing pipeline for AI-generated podcast post-production.
