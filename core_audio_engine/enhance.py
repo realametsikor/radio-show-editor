@@ -1,4 +1,3 @@
-"""
 Professional voice enhancement and audio mastering.
 Uses ffmpeg for EQ/compression and loudness normalization.
 """
