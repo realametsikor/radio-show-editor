@@ -191,8 +191,8 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    music_full_db: float   = -14,   # Music volume during silence/pauses
-    music_ducked_db: float = -32,   # Music volume when voice is active
+    music_full_db: float   = -22,   # Music volume during silence/pauses
+    music_ducked_db: float = -38,   # Music volume when voice is active
     attack_ms: int         = 150,   # How fast music ducks (ms)
     release_ms: int        = 600,   # How fast music comes back (ms)
 ) -> Path:
@@ -296,10 +296,10 @@ def mix_with_ducking(
             curve_intensity = curve_intensities[i]
             # Music curve controls the "full" level; ducking goes below that
             # Intensity 0.0 = silence, 1.0 = full music volume
-            curve_db = -40 + (curve_intensity * 28)  # Range: -40dB to -12dB
+            curve_db = -48 + (curve_intensity * 26)  # Range: -48dB to -22dB
             if is_speaking:
                 # Duck below the curve level, but never louder than ducked_db
-                target_db = min(music_ducked_db, curve_db - 18)
+                target_db = min(music_ducked_db, curve_db - 22)
             else:
                 target_db = curve_db
         else:
