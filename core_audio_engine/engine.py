@@ -1,24 +1,3 @@
-"""
-engine.py — Pipeline Orchestrator
-===================================
-Runs the full radio-show post-production pipeline:
-
-    1. Speaker diarization  →  host_A.wav, host_B.wav
-    2. Keyword-triggered SFX →  host_A_sfx.wav
-    3. Audio ducking mix     →  final radio show .wav
-
-Usage:
-    from core_audio_engine.engine import run_pipeline
-
-    final = run_pipeline(
-        raw_audio="podcast.wav",
-        music_path="background_music.wav",
-        output_path="radio_show_final.wav",
-        output_dir="output/",
-        hf_token="hf_...",
-    )
-"""
-
 from __future__ import annotations
 
 import logging
@@ -40,64 +19,53 @@ def run_pipeline(
     *,
     hf_token: Optional[str] = None,
 ) -> Path:
-    """Run the full radio-show post-production pipeline.
+    from pydub import AudioSegment
 
-    Parameters
-    ----------
-    raw_audio : str | Path
-        Path to the uploaded podcast .wav file.
-    music_path : str | Path
-        Path to the background music file (.wav or .mp3).
-    output_path : str | Path
-        Destination for the final mixed radio show .wav file.
-    output_dir : str | Path
-        Working directory for intermediate files (diarized tracks, etc.).
-    hf_token : str, optional
-        HuggingFace auth token for pyannote speaker diarization.
-
-    Returns
-    -------
-    Path
-        Resolved path to the final mixed .wav file.
-    """
     raw_audio = Path(raw_audio)
     music_path = Path(music_path)
     output_path = Path(output_path)
     output_dir = Path(output_dir)
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # ------------------------------------------------------------------
-    # Step 1: Speaker diarization
-    # ------------------------------------------------------------------
+    # Step 1: Diarize
     logger.info("Step 1/3 — Diarizing speakers …")
     host_a, host_b = diarize_speakers(
         audio_path=raw_audio,
         output_dir=output_dir,
         hf_token=hf_token,
     )
-    logger.info("Diarization complete: %s, %s", host_a, host_b)
 
-    # ------------------------------------------------------------------
-    # Step 2: Keyword-triggered sound effects on host A
-    # ------------------------------------------------------------------
-    logger.info("Step 2/3 — Applying keyword-triggered SFX …")
+    # Step 2: SFX on host A (skip if SFX files missing)
+    logger.info("Step 2/3 — Applying SFX …")
     host_a_sfx = output_dir / "host_A_sfx.wav"
-    apply_sfx(
-        audio_path=host_a,
-        output_path=host_a_sfx,
-    )
-    logger.info("SFX applied: %s", host_a_sfx)
+    try:
+        apply_sfx(audio_path=host_a, output_path=host_a_sfx)
+    except Exception as exc:
+        logger.warning("SFX step failed (%s) — using original host_A audio", exc)
+        import shutil
+        shutil.copy(str(host_a), str(host_a_sfx))
 
-    # ------------------------------------------------------------------
-    # Step 3: Mix voice tracks with background music (ducking)
-    # ------------------------------------------------------------------
-    logger.info("Step 3/3 — Mixing with background music (ducking) …")
+    # Step 3: Combine both speakers into one track
+    logger.info("Combining speaker tracks …")
+    combined_path = output_dir / "combined_voices.wav"
+    try:
+        audio_a = AudioSegment.from_wav(str(host_a_sfx))
+        audio_b = AudioSegment.from_wav(str(host_b))
+        # Overlay both speakers to preserve both voices
+        combined = audio_a.overlay(audio_b)
+        combined.export(str(combined_path), format="wav")
+        voice_to_mix = combined_path
+        logger.info("Combined both speakers → %s", combined_path)
+    except Exception as exc:
+        logger.warning("Could not combine speakers (%s) — using host_A only", exc)
+        voice_to_mix = host_a_sfx
+
+    # Step 4: Mix with background music
+    logger.info("Step 3/3 — Mixing with background music …")
     final = mix_with_ducking(
-        voice_path=host_a_sfx,
+        voice_path=voice_to_mix,
         music_path=music_path,
         output_path=output_path,
     )
-    logger.info("Pipeline complete → %s", final)
 
     return final
