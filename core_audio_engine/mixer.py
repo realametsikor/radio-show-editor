@@ -1,51 +1,52 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 import shutil
+import subprocess
 from pathlib import Path
-from typing import Optional
 
 from pydub import AudioSegment, effects
+from pydub.silence import detect_nonsilent
 
 logger = logging.getLogger(__name__)
 
 
 def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
-    """Add subtle natural pauses to AI-generated speech."""
+    """Add subtle breathing room to AI-generated speech."""
     try:
-        from pydub.silence import detect_nonsilent
-        silence_thresh = audio.dBFS - 16
+        silence_thresh = audio.dBFS - 14
         nonsilent = detect_nonsilent(
             audio,
-            min_silence_len=300,
+            min_silence_len=250,
             silence_thresh=silence_thresh,
             seek_step=50,
         )
-        if not nonsilent:
+        if not nonsilent or len(nonsilent) < 2:
             return audio
 
-        result    = AudioSegment.empty()
-        prev_end  = 0
+        result   = AudioSegment.empty()
+        prev_end = 0
 
         for i, (start, end) in enumerate(nonsilent):
+            # Add existing gap with slight extension
             if start > prev_end:
                 gap = audio[prev_end:start]
-                if len(gap) < 400:
+                if len(gap) < 350:
                     gap = gap + AudioSegment.silent(
-                        duration=min(150, len(gap)),
+                        duration=min(120, len(gap)),
                         frame_rate=audio.frame_rate,
                     )
                 result += gap
 
             chunk = audio[start:end]
-            if len(chunk) > 100:
-                chunk = chunk.fade_in(10).fade_out(10)
+            if len(chunk) > 80:
+                chunk = chunk.fade_in(8).fade_out(8)
             result += chunk
 
-            if i > 0 and i % 5 == 0 and i < len(nonsilent) - 1:
+            # Micro pause every 4 speech segments
+            if i > 0 and i % 4 == 0 and i < len(nonsilent) - 1:
                 result += AudioSegment.silent(
-                    duration=120,
+                    duration=100,
                     frame_rate=audio.frame_rate,
                 )
             prev_end = end
@@ -54,13 +55,82 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
             result += audio[prev_end:]
 
         logger.info(
-            "Pauses added: %.1fs → %.1fs",
-            len(audio) / 1000, len(result) / 1000
+            "Pauses: %.1fs → %.1fs",
+            len(audio) / 1000,
+            len(result) / 1000,
         )
         return result
+
     except Exception as exc:
         logger.warning("add_natural_pauses failed: %s", exc)
         return audio
+
+
+def _duck_music_under_voice(
+    music: AudioSegment,
+    voice: AudioSegment,
+    *,
+    music_volume_db: float = -18,
+    ducked_volume_db: float = -32,
+    silence_thresh_offset: float = -14,
+    attack_ms: int = 200,
+    release_ms: int = 600,
+) -> AudioSegment:
+    """
+    Pure pydub manual ducking:
+    - When voice is speaking: music drops to ducked_volume_db
+    - When voice is silent: music rises to music_volume_db
+    - Smooth transitions between states
+    """
+    chunk_ms     = 100   # Process in 100ms chunks
+    total_ms     = max(len(music), len(voice))
+    voice_thresh = voice.dBFS + silence_thresh_offset
+
+    # Detect voice activity
+    voice_active: list[bool] = []
+    for i in range(0, total_ms, chunk_ms):
+        chunk = voice[i:i + chunk_ms] if i < len(voice) else AudioSegment.silent(duration=chunk_ms)
+        voice_active.append(len(chunk) > 0 and chunk.dBFS > voice_thresh)
+
+    # Build music with dynamic volume
+    result = AudioSegment.silent(duration=total_ms, frame_rate=44100)
+
+    current_db    = music_volume_db
+    target_db     = music_volume_db
+    attack_steps  = max(1, attack_ms  // chunk_ms)
+    release_steps = max(1, release_ms // chunk_ms)
+
+    for i, is_speaking in enumerate(voice_active):
+        pos_ms = i * chunk_ms
+
+        # Set target volume
+        target_db = ducked_volume_db if is_speaking else music_volume_db
+
+        # Smooth transition
+        if target_db < current_db:
+            step      = (target_db - current_db) / attack_steps
+            current_db = max(target_db, current_db + step)
+        elif target_db > current_db:
+            step      = (target_db - current_db) / release_steps
+            current_db = min(target_db, current_db + step)
+
+        # Get music chunk
+        if pos_ms < len(music):
+            chunk = music[pos_ms:pos_ms + chunk_ms]
+            if len(chunk) < chunk_ms:
+                chunk = chunk + AudioSegment.silent(
+                    duration=chunk_ms - len(chunk),
+                    frame_rate=music.frame_rate,
+                )
+        else:
+            chunk = AudioSegment.silent(duration=chunk_ms, frame_rate=44100)
+
+        # Apply volume
+        db_diff = current_db - chunk.dBFS if chunk.dBFS != float("-inf") else 0
+        chunk   = chunk + db_diff
+        result  = result.overlay(chunk, position=pos_ms)
+
+    return result
 
 
 def mix_with_ducking(
@@ -69,10 +139,10 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    base_music_volume_db: float = -12,
-    duck_ratio: float = 6.0,
-    attack_ms: int = 300,
-    release_ms: int = 1200,
+    base_music_volume_db: float = -18,
+    ducked_music_volume_db: float = -34,
+    attack_ms: int = 200,
+    release_ms: int = 800,
 ) -> Path:
     voice_path  = Path(voice_path)
     music_path  = Path(music_path)
@@ -85,100 +155,92 @@ def mix_with_ducking(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    logger.info("Loading voice and music...")
+
     # Load voice
     voice = AudioSegment.from_wav(str(voice_path))
 
     # Add natural pauses
     try:
         voice = add_natural_pauses(voice)
-        paused_path = voice_path.parent / "voice_paused.wav"
-        voice.export(str(paused_path), format="wav")
-        voice_to_use = paused_path
+        logger.info("Natural pauses added")
     except Exception as exc:
-        logger.warning("Pause injection failed: %s", exc)
-        voice_to_use = voice_path
+        logger.warning("Pauses failed: %s", exc)
 
     voice_duration_ms = len(voice)
 
     # Load music
     try:
         music = AudioSegment.from_file(str(music_path))
+        logger.info("Music loaded: %.1fs", len(music) / 1000)
     except Exception as exc:
-        logger.warning("Music load failed: %s — voice only output", exc)
+        logger.warning("Music load failed: %s — voice only", exc)
+        voice = effects.normalize(voice)
         voice.export(str(output_path), format="wav")
         return output_path.resolve()
 
-    # Loop music to be longer than voice
-    while len(music) < voice_duration_ms + 15000:
+    # Convert to stereo if mono
+    if music.channels == 1:
+        music = music.set_channels(2)
+
+    # Loop music to cover full voice duration + buffer
+    while len(music) < voice_duration_ms + 10000:
         music = music + music
     music = music[:voice_duration_ms + 8000]
 
-    # Normalize music then set volume
-    # -12dB means music is clearly audible but voice dominates
-    music = effects.normalize(music) + base_music_volume_db
+    # Normalize music
+    music = effects.normalize(music)
 
-    # Smooth fades
-    music = music.fade_in(3000).fade_out(5000)
+    logger.info(
+        "Starting manual ducking mix — voice: %.1fs, music: %.1fs",
+        voice_duration_ms / 1000,
+        len(music) / 1000,
+    )
 
-    tmp_music = output_path.parent / "tmp_music.wav"
-    music.export(str(tmp_music), format="wav")
-
-    # Try professional ffmpeg sidechain ducking
-    ffmpeg_ok = False
+    # Apply manual ducking
     try:
-        filter_complex = (
-            "[1:a]asplit=2[sc][vox];"
-            "[0:a][sc]sidechaincompress="
-            "threshold=0.02:"
-            "ratio=" + str(duck_ratio) + ":"
-            "attack=" + str(attack_ms) + ":"
-            "release=" + str(release_ms) + ":"
-            "makeup=1[ducked];"
-            "[ducked][vox]amix=inputs=2:duration=longest:weights=1 3[out]"
+        ducked_music = _duck_music_under_voice(
+            music,
+            voice,
+            music_volume_db=base_music_volume_db,
+            ducked_volume_db=ducked_music_volume_db,
+            attack_ms=attack_ms,
+            release_ms=release_ms,
         )
-        cmd = [
-            "ffmpeg", "-y",
-            "-i", str(tmp_music),
-            "-i", str(voice_to_use),
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-acodec", "pcm_s16le",
-            "-ar", "44100",
-            "-ac", "2",
-            str(output_path),
-        ]
-        result = subprocess.run(cmd, capture_output=True, timeout=600)
-        if result.returncode == 0:
-            ffmpeg_ok = True
-            logger.info("ffmpeg sidechain mix complete")
-        else:
-            logger.warning("ffmpeg failed: %s", result.stderr.decode()[:300])
+        logger.info("Ducking applied ✅")
     except Exception as exc:
-        logger.warning("ffmpeg exception: %s", exc)
+        logger.warning("Ducking failed: %s — using simple volume reduction", exc)
+        ducked_music = music + base_music_volume_db
 
-    # Fallback: pydub overlay
-    if not ffmpeg_ok:
-        try:
-            logger.info("Using pydub overlay fallback")
-            voice_audio   = AudioSegment.from_wav(str(voice_to_use))
-            music_trimmed = music[:len(voice_audio) + 4000]
-            # Simple mix: lay music under voice
-            combined = music_trimmed.overlay(voice_audio)
-            combined = effects.normalize(combined)
-            combined.export(str(output_path), format="wav")
-            logger.info("pydub overlay complete")
-            ffmpeg_ok = True
-        except Exception as exc:
-            logger.warning("pydub fallback failed: %s", exc)
+    # Fade music in/out
+    ducked_music = ducked_music.fade_in(2000).fade_out(4000)
 
-    # Last resort: voice only
-    if not ffmpeg_ok:
-        shutil.copy(str(voice_to_use), str(output_path))
-        logger.warning("Last resort: voice only — no music")
+    # Convert voice to stereo for mixing
+    if voice.channels == 1:
+        voice_stereo = voice.set_channels(2)
+    else:
+        voice_stereo = voice
 
-    try:
-        tmp_music.unlink()
-    except Exception:
-        pass
+    # Overlay voice on top of ducked music
+    total_duration_ms = max(len(ducked_music), len(voice_stereo))
+    if len(ducked_music) < total_duration_ms:
+        ducked_music = ducked_music + AudioSegment.silent(
+            duration=total_duration_ms - len(ducked_music),
+            frame_rate=44100,
+            channels=2,
+        )
+
+    mixed = ducked_music.overlay(voice_stereo, position=0)
+
+    # Normalize final mix
+    mixed = effects.normalize(mixed)
+
+    # Export
+    mixed.export(str(output_path), format="wav")
+    logger.info(
+        "Mix complete → %.1fs, dBFS=%.1f",
+        len(mixed) / 1000,
+        mixed.dBFS,
+    )
 
     return output_path.resolve()
