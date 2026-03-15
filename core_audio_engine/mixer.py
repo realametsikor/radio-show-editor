@@ -1,6 +1,6 @@
 """
 Professional radio mixer using ffmpeg sidechaincompress.
-Optimized for NotebookLM audio with dynamic mid-roll music breaks,
+Optimized for NotebookLM audio with lightning-fast mid-roll music breaks,
 cold open intro pacing, and walk-off outro swells!
 """
 from __future__ import annotations
@@ -17,35 +17,38 @@ logger = logging.getLogger(__name__)
 
 
 def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
-    """
-    Bypassed for NotebookLM: 
-    Google's AI already has perfect pacing. 
-    (Kept here to prevent import errors from other files!)
-    """
-    logger.info("Skipping artificial pauses — optimized for NotebookLM.")
+    """Bypassed to prevent import errors and preserve AI pacing."""
     return audio
 
 
 def create_radio_breaks(voice: AudioSegment) -> AudioSegment:
     """
     Finds natural pauses in the speech and inserts longer silences (breaks).
-    Because of the ducking compressor, these silences will cause the background
-    music to automatically swell up, creating a professional radio transition!
+    Optimized with a low-res proxy and seek_step to prevent server crashes!
     """
     duration_sec = len(voice) / 1000.0
     
-    # Decide how many breaks based on length (1 break every ~2.5 minutes)
     num_breaks = int(duration_sec // 150)
     if num_breaks == 0 and duration_sec > 45:
-        num_breaks = 1  # At least 1 break if the clip is over 45 seconds
+        num_breaks = 1
 
     if num_breaks == 0:
         return voice
 
     logger.info(f"Attempting to insert {num_breaks} music break(s)...")
     
-    # Look for natural breaths/pauses > 400ms to avoid cutting off words
-    silences = detect_silence(voice, min_silence_len=400, silence_thresh=voice.dBFS-16)
+    # --- CRASH PREVENTION OPTIMIZATION ---
+    # 1. Create a tiny, low-res proxy for the scanner to read (Saves RAM)
+    proxy = voice.set_frame_rate(16000).set_channels(1)
+    
+    # 2. Add seek_step=50 to jump 50ms at a time (50x Faster CPU processing)
+    silences = detect_silence(
+        proxy, 
+        min_silence_len=400, 
+        silence_thresh=proxy.dBFS-16,
+        seek_step=50 
+    )
+    # -------------------------------------
     
     if not silences:
         logger.warning("No natural pauses found. Skipping breaks.")
@@ -55,16 +58,13 @@ def create_radio_breaks(voice: AudioSegment) -> AudioSegment:
     break_points = []
     
     for target in target_times:
-        # Find the closest natural pause to our ideal target time
         best_silence = min(silences, key=lambda s: abs(s[0] - target))
         break_points.append(best_silence[0])
         
-    # Sort descending so we insert from back to front (prevents shifting audio)
     break_points.sort(reverse=True)
     
     result = voice
     for bp in break_points:
-        # Insert 2.5 seconds of pure silence! 
         break_silence = AudioSegment.silent(duration=2500, frame_rate=voice.frame_rate)
         result = result[:bp] + break_silence + result[bp:]
         
@@ -96,9 +96,7 @@ def mix_with_ducking(
     release_ms: int        = 800,    
     voice_boost_db: float  = 0.0,    
 ) -> Path:
-    """
-    Professional radio mix tailored for high-quality NotebookLM audio.
-    """
+    
     voice_path  = Path(voice_path)
     music_path  = Path(music_path)
     output_path = Path(output_path)
@@ -114,25 +112,23 @@ def mix_with_ducking(
     tmp_music = output_path.parent / "_tmp_music_prepared.wav"
 
     try:
-        # 1. Prepare Voice (Inject the Radio Breaks & Intro/Outro!)
-        logger.info("Preparing voice track (adding breaks and padding)...")
+        # 1. Prepare Voice
+        logger.info("Preparing voice track...")
         voice_audio = AudioSegment.from_wav(str(voice_path))
         if voice_audio.channels == 1:
             voice_audio = voice_audio.set_channels(2)
         if voice_audio.frame_rate != 44100:
             voice_audio = voice_audio.set_frame_rate(44100)
             
+        # Apply the highly-optimized radio breaks
         voice_audio = create_radio_breaks(voice_audio)
 
-        # --- NEW INTRO & OUTRO TIMING ---
         # 3 seconds of silence at the start so the music plays solo
         intro_pad = AudioSegment.silent(duration=3000, frame_rate=44100)
         # 5 seconds of silence at the end so the music swells and fades out
         outro_pad = AudioSegment.silent(duration=5000, frame_rate=44100)
         
         voice_audio = intro_pad + voice_audio + outro_pad
-        # --------------------------------
-
         voice_audio.export(str(tmp_voice), format="wav")
         voice_duration_ms = len(voice_audio)
 
@@ -148,7 +144,7 @@ def mix_with_ducking(
         music = music.fade_in(2000).fade_out(5000)
         music.export(str(tmp_music), format="wav")
 
-        # 3. Build ffmpeg filter chain tailored for NotebookLM
+        # 3. Build ffmpeg filter chain
         filter_str = (
             f"[0:a]aformat=channel_layouts=stereo,"
             f"volume={music_volume_db}dB,"
@@ -186,7 +182,7 @@ def mix_with_ducking(
         logger.info("Running ffmpeg sidechain mix...")
         result = subprocess.run(cmd, capture_output=True, timeout=1800)
         if result.returncode == 0:
-            logger.info("✅ NotebookLM Mix complete!")
+            logger.info("✅ Mix complete!")
         else:
             error = result.stderr.decode()
             raise RuntimeError("ffmpeg mix failed: " + error[-200:])
@@ -215,7 +211,6 @@ def _pydub_fallback_mix(
     output_path: Path,
     music_volume_db: float = -15.0,
 ) -> None:
-    """Simple pydub fallback if ffmpeg sidechain fails."""
     try:
         logger.info("Using pydub fallback mixer...")
         voice = AudioSegment.from_wav(str(voice_path))
@@ -239,5 +234,5 @@ def _pydub_fallback_mix(
         logger.info("✅ pydub fallback mix complete")
 
     except Exception as exc:
-        logger.warning("pydub fallback also failed: %s — voice only", exc)
+        logger.warning("pydub fallback also failed: %s", exc)
         shutil.copy(str(voice_path), str(output_path))
