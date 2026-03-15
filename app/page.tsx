@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import Link from "next/link";
 import {
   Radio,
   RotateCcw,
@@ -12,6 +13,7 @@ import {
   Zap,
   ArrowDown,
   ChevronRight,
+  Library,
 } from "lucide-react";
 import FileUpload from "@/components/FileUpload";
 import ProcessingStatus from "@/components/ProcessingStatus";
@@ -119,12 +121,25 @@ export default function Home() {
               Radio Show Editor
             </span>
           </div>
-          <button
-            onClick={scrollToEditor}
-            className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition btn-glow hover:bg-indigo-500"
-          >
-            Get Started
-          </button>
+          
+          {/* NEW NAV BUTTONS CONTAINER */}
+          <div className="flex items-center gap-3 sm:gap-4">
+            <Link
+              href="/recent"
+              className="flex items-center gap-2 rounded-lg border border-gray-800 bg-[#13131A] px-3 py-2 text-sm font-medium text-gray-300 transition-colors hover:border-indigo-500 hover:text-white sm:px-4"
+            >
+              <Library className="h-4 w-4 text-indigo-400" />
+              <span className="hidden sm:inline">My Vault</span>
+              <span className="sm:hidden">Vault</span>
+            </Link>
+            
+            <button
+              onClick={scrollToEditor}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition btn-glow hover:bg-indigo-500"
+            >
+              Get Started
+            </button>
+          </div>
         </div>
       </nav>
 
@@ -349,3 +364,4 @@ export default function Home() {
     </div>
   );
 }
+
