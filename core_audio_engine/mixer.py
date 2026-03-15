@@ -86,21 +86,20 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    music_volume_db: float = -12,    # Music base volume before ducking
-    duck_ratio: float      = 12.0,   # How aggressively to duck music under voice
-    attack_ms: int         = 100,    # How fast music ducks (ms) — fast = tight
-    release_ms: int        = 1200,   # How fast music recovers (ms) — slow = smooth
-    voice_boost_db: float  = 2.0,    # Slight voice boost for clarity
+    music_volume_db: float = -22,   # Music base volume — quiet enough to not overpower voice
+    duck_ratio: float      = 12.0,  # How aggressively to duck music under voice
+    attack_ms: int         = 100,   # How fast music ducks (ms)
+    release_ms: int        = 1200,  # How fast music recovers (ms)
+    voice_boost_db: float  = 2.0,   # Slight voice boost for clarity
 ) -> Path:
     """
     Professional radio mix using ffmpeg sidechaincompress.
 
-    The voice signal is used as a sidechain trigger:
-    - When voice speaks → music ducks down automatically
-    - When voice pauses → music swells back up naturally
-    - Voice is boosted and EQ'd for broadcast clarity
-    - Music is EQ'd for warmth and presence under voice
-    - Processes at 40x realtime (35-min file = ~1 min mixing)
+    - Voice triggers sidechain compression on music
+    - Music ducks when voice speaks, swells during pauses
+    - Voice EQ'd for broadcast clarity
+    - Music EQ'd for warmth without overpowering voice
+    - Processes at 40x realtime
     """
     voice_path  = Path(voice_path)
     music_path  = Path(music_path)
@@ -113,7 +112,7 @@ def mix_with_ducking(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Prepare music — loop to cover voice duration + buffer
+    # Prepare music
     logger.info("Preparing music...")
     try:
         music = AudioSegment.from_file(str(music_path))
@@ -138,29 +137,25 @@ def mix_with_ducking(
         shutil.copy(str(voice_path), str(output_path))
         return output_path.resolve()
 
-    # Build ffmpeg filter chain
-    # Chain:
-    # 1. Music: convert to stereo → set volume → EQ for warmth
-    # 2. Voice: convert to stereo → EQ for presence → compress → boost
-    # 3. Sidechain: voice triggers compression on music
-    # 4. Mix: ducked music + voice at 3:1 ratio (voice dominant)
+    # Build ffmpeg filter chain:
+    # 1. Music: stereo → volume reduction → warm EQ
+    # 2. Voice: stereo → rumble cut → presence EQ → compress → boost
+    # 3. Sidechain: voice triggers music compression
+    # 4. Mix: voice at 5x weight over music
     filter_str = (
-        # Music prep: stereo, volume, warm EQ
         f"[0:a]aformat=channel_layouts=stereo,"
         f"volume={music_volume_db}dB,"
-        f"equalizer=f=120:width_type=o:width=1:g=2,"      # Bass warmth
-        f"equalizer=f=8000:width_type=o:width=1:g=1.5"    # High-end sparkle
+        f"equalizer=f=120:width_type=o:width=1:g=2,"
+        f"equalizer=f=8000:width_type=o:width=1:g=1.5"
         f"[mp];"
-        # Voice prep: stereo, presence EQ, compression, boost
         f"[1:a]aformat=channel_layouts=stereo,"
-        f"highpass=f=80,"                                   # Remove rumble
-        f"equalizer=f=250:width_type=o:width=2:g=-2,"      # Cut muddy low-mid
-        f"equalizer=f=2800:width_type=o:width=2:g=3,"      # Presence boost
-        f"equalizer=f=5500:width_type=o:width=1:g=-1,"     # Tame harshness
+        f"highpass=f=80,"
+        f"equalizer=f=250:width_type=o:width=2:g=-2,"
+        f"equalizer=f=2800:width_type=o:width=2:g=3,"
+        f"equalizer=f=5500:width_type=o:width=1:g=-1,"
         f"acompressor=threshold=0.1:ratio=3:attack=5:release=80:makeup=2,"
         f"volume={voice_boost_db}dB"
         f"[vp];"
-        # Sidechain: voice triggers music ducking
         f"[vp]asplit=2[sc][vm];"
         f"[mp][sc]sidechaincompress="
         f"threshold=0.015:"
@@ -169,8 +164,7 @@ def mix_with_ducking(
         f"release={release_ms}:"
         f"makeup=1.5"
         f"[ducked];"
-        # Final mix: music + voice (voice 3x louder in mix)
-        f"[ducked][vm]amix=inputs=2:duration=longest:weights=1 3[out]"
+        f"[ducked][vm]amix=inputs=2:duration=longest:weights=1 5[out]"
     )
 
     cmd = [
@@ -190,13 +184,12 @@ def mix_with_ducking(
         result = subprocess.run(
             cmd,
             capture_output=True,
-            timeout=1800,  # 30-min timeout
+            timeout=1800,
         )
         if result.returncode == 0:
-            # Verify output
             out_audio = AudioSegment.from_wav(str(output_path))
             logger.info(
-                "✅ ffmpeg mix complete: %.1fs dBFS=%.1f max=%.1f",
+                "✅ Mix complete: %.1fs dBFS=%.1f max=%.1f",
                 len(out_audio) / 1000,
                 out_audio.dBFS,
                 out_audio.max_dBFS,
@@ -228,7 +221,7 @@ def _pydub_fallback_mix(
     voice_path: Path,
     music_path: Path,
     output_path: Path,
-    music_volume_db: float = -16,
+    music_volume_db: float = -22,
 ) -> None:
     """Simple pydub fallback if ffmpeg sidechain fails."""
     try:
@@ -236,22 +229,18 @@ def _pydub_fallback_mix(
         voice = AudioSegment.from_wav(str(voice_path))
         music = AudioSegment.from_file(str(music_path))
 
-        # Ensure stereo
         if voice.channels == 1:
             voice = voice.set_channels(2)
         if music.channels == 1:
             music = music.set_channels(2)
 
-        # Normalize and set volumes
         voice = effects.normalize(voice)
         music = effects.normalize(music) + music_volume_db
 
-        # Loop music if needed
         while len(music) < len(voice):
             music = music + music
         music = music[:len(voice) + 3000]
 
-        # Mix
         mixed = music.overlay(voice, position=0)
         mixed = effects.normalize(mixed)
         mixed.export(str(output_path), format="wav")
