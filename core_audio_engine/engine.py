@@ -63,7 +63,7 @@ def run_pipeline(
     from core_audio_engine.enhance  import enhance_voice, master_audio
     from core_audio_engine.producer import analyze_with_claude
     from core_audio_engine.sfx      import apply_sfx, generate_intro, generate_outro
-    from core_audio_engine.mixer    import mix_with_ducking
+    from core_audio_engine.mixer    import mix_with_ducking, add_natural_pauses
 
     raw_audio   = Path(raw_audio)
     music_path  = Path(music_path)
@@ -162,6 +162,20 @@ def run_pipeline(
     except Exception as exc:
         logger.warning("Combine failed: %s", exc)
         shutil.copy(str(ha_enh), str(combined_path))
+
+    # ── Step 3b: Insert natural pauses ────────────────────────────────
+    logger.info("STEP 3b — Inserting natural pauses")
+    try:
+        combined_audio = AudioSegment.from_wav(str(combined_path))
+        paused_audio = add_natural_pauses(combined_audio)
+        paused_audio.export(str(combined_path), format="wav")
+        logger.info(
+            "✅ Pauses inserted: %.1fs → %.1fs",
+            len(combined_audio) / 1000,
+            len(paused_audio) / 1000,
+        )
+    except Exception as exc:
+        logger.warning("Pause insertion failed: %s", exc)
 
     # ── Step 4: Transcribe + Claude production plan ────────────────────
     logger.info("STEP 4/7 — Transcribing + Claude AI analysis")
