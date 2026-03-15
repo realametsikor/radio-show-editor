@@ -15,7 +15,7 @@ from fastapi.responses import FileResponse
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Persistent task storage — saves to disk so tasks survive restarts
+# Persistent task storage
 # ---------------------------------------------------------------------------
 TASKS_DIR = Path("tasks")
 TASKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -122,7 +122,6 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     set_progress(task_id, "🔄 Re-encoding audio to clean WAV format...")
     clean_path = job_dir / "clean_upload.wav"
     try:
-        # Check if already clean WAV to skip re-encoding
         if original_fp.suffix.lower() == ".wav" and clean_path.is_file():
             audio_to_process = original_fp
             set_progress(task_id, "✅ Audio already clean, skipping re-encode")
@@ -220,12 +219,12 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             set_progress(task_id, "✅ Mix complete")
             return r
 
-        diarize_mod.diarize_speakers    = _patched_diarize
-        enhance_mod.enhance_voice       = _patched_enhance
-        enhance_mod.master_audio        = _patched_master
+        diarize_mod.diarize_speakers     = _patched_diarize
+        enhance_mod.enhance_voice        = _patched_enhance
+        enhance_mod.master_audio         = _patched_master
         producer_mod.analyze_with_claude = _patched_analyze
-        sfx_mod.apply_sfx               = _patched_sfx
-        mixer_mod.mix_with_ducking      = _patched_mix
+        sfx_mod.apply_sfx                = _patched_sfx
+        mixer_mod.mix_with_ducking       = _patched_mix
 
         set_progress(task_id, "🚀 Starting full production pipeline...")
 
@@ -246,14 +245,36 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         sfx_mod.apply_sfx                = _orig_sfx
         mixer_mod.mix_with_ducking       = _orig_mix
 
+        # Convert WAV to MP3
+        set_progress(task_id, "🎵 Converting to MP3 for smaller file size...")
+        mp3_path = Path(str(final_path)).with_suffix(".mp3")
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(final_path),
+                    "-codec:a", "libmp3lame",
+                    "-qscale:a", "2",
+                    str(mp3_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            result_file = str(mp3_path)
+            set_progress(task_id, "✅ MP3 conversion complete")
+            logger.info("Converted to MP3 → %s", mp3_path)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("MP3 conversion failed: %s", exc.stderr.decode())
+            result_file = str(final_path)
+
         set_progress(task_id, "🎉 Your radio show is ready!")
         update_task(
             task_id,
             status="SUCCESS",
-            result_file=str(final_path),
+            result_file=result_file,
             progress="🎉 Your radio show is ready!",
         )
-        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
+        logger.info("Pipeline complete → %s (task %s)", result_file, task_id)
 
     except Exception as exc:
         logger.exception("Pipeline failed for task %s", task_id)
@@ -266,12 +287,10 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
 
 
 # ---------------------------------------------------------------------------
-# Startup: resume any interrupted PROCESSING tasks
+# Startup: mark interrupted tasks as failed
 # ---------------------------------------------------------------------------
 @app.on_event("startup")
 async def resume_interrupted_tasks():
-    """On startup, find tasks stuck in PROCESSING and mark them as failed
-    so users know to resubmit rather than waiting forever."""
     resumed = 0
     for task_file in TASKS_DIR.glob("*.json"):
         try:
@@ -288,7 +307,9 @@ async def resume_interrupted_tasks():
         except Exception:
             pass
     if resumed:
-        logger.info("Marked %d interrupted tasks as failed on startup", resumed)
+        logger.info(
+            "Marked %d interrupted tasks as failed on startup", resumed
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -346,7 +367,6 @@ async def upload_audio(
 
     logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
 
-    # Save task to disk immediately
     save_task(task_id, {
         "status": "PENDING",
         "result_file": None,
@@ -401,22 +421,48 @@ async def download_result(task_id: str):
 
     output_path = Path(task["result_file"])
 
+    # Try fallback if file not found
+    if not output_path.is_file():
+        parts = output_path.parts
+        task_dir_index = None
+        for i, part in enumerate(parts):
+            if part == "uploads" and i + 1 < len(parts):
+                task_dir_index = i + 1
+                break
+
+        if task_dir_index:
+            task_dir = Path(*parts[:task_dir_index + 1])
+            for fallback in [
+                task_dir / "radio_show_final.mp3",
+                task_dir / "radio_show_final.wav",
+            ]:
+                if fallback.is_file():
+                    output_path = fallback
+                    break
+
     if not output_path.is_file():
         raise HTTPException(
             status_code=404,
-            detail="Output file not found. It may have been cleaned up.",
+            detail="Output file not found. Please reprocess your file.",
         )
+
+    # Serve MP3 if available, else WAV
+    media_type = "audio/mpeg" if output_path.suffix == ".mp3" else "audio/wav"
+    filename = (
+        "radio_show_final.mp3"
+        if output_path.suffix == ".mp3"
+        else "radio_show_final.wav"
+    )
 
     return FileResponse(
         path=str(output_path),
-        media_type="audio/wav",
-        filename="radio_show_final.wav",
+        media_type=media_type,
+        filename=filename,
     )
 
 
 @app.get("/health")
 async def health_check():
-    # Count tasks by status for monitoring
     total = pending = processing = success = failed = 0
     for f in TASKS_DIR.glob("*.json"):
         try:
@@ -439,5 +485,5 @@ async def health_check():
             "processing": processing,
             "success": success,
             "failed": failed,
-        }
+        },
     }
