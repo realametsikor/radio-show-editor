@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -13,12 +14,52 @@ from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 
-tasks: dict[str, dict] = {}
+# ---------------------------------------------------------------------------
+# Persistent task storage — saves to disk so tasks survive restarts
+# ---------------------------------------------------------------------------
+TASKS_DIR = Path("tasks")
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def _task_file(task_id: str) -> Path:
+    return TASKS_DIR / f"{task_id}.json"
+
+
+def save_task(task_id: str, data: dict) -> None:
+    try:
+        _task_file(task_id).write_text(json.dumps(data))
+    except Exception as exc:
+        logger.warning("Failed to save task %s: %s", task_id, exc)
+
+
+def load_task(task_id: str) -> dict | None:
+    try:
+        f = _task_file(task_id)
+        if f.is_file():
+            return json.loads(f.read_text())
+    except Exception as exc:
+        logger.warning("Failed to load task %s: %s", task_id, exc)
+    return None
+
+
+def update_task(task_id: str, **kwargs) -> None:
+    task = load_task(task_id) or {}
+    task.update(kwargs)
+    save_task(task_id, task)
+
+
+def set_progress(task_id: str, message: str) -> None:
+    update_task(task_id, progress=message)
+    logger.info("[%s] %s", task_id[:8], message)
+
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
 app = FastAPI(
     title="Radio Show Editor API",
     description="Upload a podcast, let the pipeline process it, download the finished radio show.",
-    version="0.4.0",
+    version="0.5.0",
 )
 
 _raw_origins = os.environ.get(
@@ -52,57 +93,56 @@ ALLOWED_CONTENT_TYPES = {
     "application/octet-stream",
 }
 
-ALLOWED_EXTENSIONS = {
-    ".wav", ".mp3", ".mp4", ".m4a", ".aac", ".ogg"
-}
+ALLOWED_EXTENSIONS = {".wav", ".mp3", ".mp4", ".m4a", ".aac", ".ogg"}
 
 
-def set_progress(task_id: str, message: str) -> None:
-    if task_id in tasks:
-        tasks[task_id]["progress"] = message
-        logger.info("[%s] %s", task_id[:8], message)
-
-
+# ---------------------------------------------------------------------------
+# Background processing
+# ---------------------------------------------------------------------------
 def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     from core_audio_engine.engine import run_pipeline
     from core_audio_engine.music_fetch import fetch_music_for_mood
 
-    tasks[task_id]["status"] = "PROCESSING"
+    update_task(task_id, status="PROCESSING")
 
     original_fp = Path(file_path)
     if not original_fp.is_file():
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = f"Uploaded file not found: {original_fp}"
+        update_task(
+            task_id,
+            status="FAILURE",
+            error=f"Uploaded file not found: {original_fp}",
+        )
         return
 
     job_dir = original_fp.parent
     output_dir = job_dir / "output"
     output_file = job_dir / "radio_show_final.wav"
 
-    # Re-encode to clean 44100Hz mono WAV
+    # Re-encode to clean WAV
     set_progress(task_id, "🔄 Re-encoding audio to clean WAV format...")
     clean_path = job_dir / "clean_upload.wav"
     try:
-        subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", str(original_fp),
-                "-ar", "44100",
-                "-ac", "1",
-                "-sample_fmt", "s16",
-                str(clean_path),
-            ],
-            check=True,
-            capture_output=True,
-        )
-        audio_to_process = clean_path
-        set_progress(task_id, "✅ Audio re-encoded successfully")
-        logger.info("Re-encoded audio → %s", audio_to_process)
+        # Check if already clean WAV to skip re-encoding
+        if original_fp.suffix.lower() == ".wav" and clean_path.is_file():
+            audio_to_process = original_fp
+            set_progress(task_id, "✅ Audio already clean, skipping re-encode")
+        else:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-i", str(original_fp),
+                    "-ar", "44100",
+                    "-ac", "1",
+                    "-sample_fmt", "s16",
+                    str(clean_path),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            audio_to_process = clean_path
+            set_progress(task_id, "✅ Audio re-encoded successfully")
     except subprocess.CalledProcessError as exc:
-        logger.warning(
-            "ffmpeg re-encode failed, using original: %s",
-            exc.stderr.decode()
-        )
+        logger.warning("ffmpeg re-encode failed: %s", exc.stderr.decode())
         audio_to_process = original_fp
 
     # Resolve background music
@@ -117,9 +157,8 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             )
             music_path = str(fetched)
             set_progress(task_id, "✅ Background music ready")
-            logger.info("Dynamic music downloaded → %s", music_path)
         except Exception as exc:
-            logger.warning("Dynamic music fetch failed: %s", exc)
+            logger.warning("Music fetch failed: %s", exc)
             set_progress(task_id, "⚠️ Music fetch failed, using default track")
 
     if not music_path:
@@ -129,7 +168,7 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
         set_progress(task_id, "✅ Using default background music")
 
-    # Run full pipeline
+    # Run pipeline with progress patches
     try:
         set_progress(task_id, "🎙️ Loading AI speaker diarization model...")
 
@@ -139,54 +178,54 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         import core_audio_engine.mixer as mixer_mod
         import core_audio_engine.producer as producer_mod
 
-        _orig_diarize = diarize_mod.diarize_speakers
-        _orig_enhance = enhance_mod.enhance_voice
-        _orig_master = enhance_mod.master_audio
-        _orig_sfx = sfx_mod.apply_sfx
-        _orig_mix = mixer_mod.mix_with_ducking
-        _orig_analyze = producer_mod.analyze_with_claude
+        _orig_diarize  = diarize_mod.diarize_speakers
+        _orig_enhance  = enhance_mod.enhance_voice
+        _orig_master   = enhance_mod.master_audio
+        _orig_sfx      = sfx_mod.apply_sfx
+        _orig_mix      = mixer_mod.mix_with_ducking
+        _orig_analyze  = producer_mod.analyze_with_claude
 
-        def _patched_diarize(*args, **kwargs):
+        def _patched_diarize(*a, **kw):
             set_progress(task_id, "🎙️ Separating speakers — AI identifying voices...")
-            result = _orig_diarize(*args, **kwargs)
+            r = _orig_diarize(*a, **kw)
             set_progress(task_id, "✅ Speakers separated successfully")
-            return result
+            return r
 
-        def _patched_enhance(*args, **kwargs):
+        def _patched_enhance(*a, **kw):
             set_progress(task_id, "🎚️ Enhancing voice quality — EQ & compression...")
-            return _orig_enhance(*args, **kwargs)
+            return _orig_enhance(*a, **kw)
 
-        def _patched_master(*args, **kwargs):
+        def _patched_master(*a, **kw):
             set_progress(task_id, "🏆 Mastering to broadcast standards...")
-            result = _orig_master(*args, **kwargs)
+            r = _orig_master(*a, **kw)
             set_progress(task_id, "✅ Mastering complete")
-            return result
+            return r
 
-        def _patched_analyze(*args, **kwargs):
-            set_progress(task_id, "🤖 Claude AI analyzing conversation for production cues...")
-            result = _orig_analyze(*args, **kwargs)
-            title = result.get("show_title", "")
+        def _patched_analyze(*a, **kw):
+            set_progress(task_id, "🤖 Claude AI analyzing conversation...")
+            r = _orig_analyze(*a, **kw)
+            title = r.get("show_title", "")
             set_progress(task_id, f"✅ Production plan ready: '{title}'")
-            return result
+            return r
 
-        def _patched_sfx(*args, **kwargs):
+        def _patched_sfx(*a, **kw):
             set_progress(task_id, "✨ Applying AI-directed sound effects...")
-            result = _orig_sfx(*args, **kwargs)
+            r = _orig_sfx(*a, **kw)
             set_progress(task_id, "✅ Sound effects applied")
-            return result
+            return r
 
-        def _patched_mix(*args, **kwargs):
+        def _patched_mix(*a, **kw):
             set_progress(task_id, "🎵 Mixing voices with background music...")
-            result = _orig_mix(*args, **kwargs)
+            r = _orig_mix(*a, **kw)
             set_progress(task_id, "✅ Mix complete")
-            return result
+            return r
 
-        diarize_mod.diarize_speakers = _patched_diarize
-        enhance_mod.enhance_voice = _patched_enhance
-        enhance_mod.master_audio = _patched_master
+        diarize_mod.diarize_speakers    = _patched_diarize
+        enhance_mod.enhance_voice       = _patched_enhance
+        enhance_mod.master_audio        = _patched_master
         producer_mod.analyze_with_claude = _patched_analyze
-        sfx_mod.apply_sfx = _patched_sfx
-        mixer_mod.mix_with_ducking = _patched_mix
+        sfx_mod.apply_sfx               = _patched_sfx
+        mixer_mod.mix_with_ducking      = _patched_mix
 
         set_progress(task_id, "🚀 Starting full production pipeline...")
 
@@ -200,31 +239,67 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
         )
 
         # Restore originals
-        diarize_mod.diarize_speakers = _orig_diarize
-        enhance_mod.enhance_voice = _orig_enhance
-        enhance_mod.master_audio = _orig_master
+        diarize_mod.diarize_speakers     = _orig_diarize
+        enhance_mod.enhance_voice        = _orig_enhance
+        enhance_mod.master_audio         = _orig_master
         producer_mod.analyze_with_claude = _orig_analyze
-        sfx_mod.apply_sfx = _orig_sfx
-        mixer_mod.mix_with_ducking = _orig_mix
+        sfx_mod.apply_sfx                = _orig_sfx
+        mixer_mod.mix_with_ducking       = _orig_mix
 
         set_progress(task_id, "🎉 Your radio show is ready!")
-        tasks[task_id]["status"] = "SUCCESS"
-        tasks[task_id]["result_file"] = str(final_path)
+        update_task(
+            task_id,
+            status="SUCCESS",
+            result_file=str(final_path),
+            progress="🎉 Your radio show is ready!",
+        )
         logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
 
     except Exception as exc:
         logger.exception("Pipeline failed for task %s", task_id)
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = str(exc)
+        update_task(
+            task_id,
+            status="FAILURE",
+            error=str(exc),
+            progress=f"❌ Failed: {str(exc)[:100]}",
+        )
 
 
+# ---------------------------------------------------------------------------
+# Startup: resume any interrupted PROCESSING tasks
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+async def resume_interrupted_tasks():
+    """On startup, find tasks stuck in PROCESSING and mark them as failed
+    so users know to resubmit rather than waiting forever."""
+    resumed = 0
+    for task_file in TASKS_DIR.glob("*.json"):
+        try:
+            data = json.loads(task_file.read_text())
+            if data.get("status") == "PROCESSING":
+                data["status"] = "FAILURE"
+                data["error"] = (
+                    "Server restarted during processing. "
+                    "Please resubmit your file."
+                )
+                data["progress"] = "❌ Server restarted — please resubmit"
+                task_file.write_text(json.dumps(data))
+                resumed += 1
+        except Exception:
+            pass
+    if resumed:
+        logger.info("Marked %d interrupted tasks as failed on startup", resumed)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 @app.post("/upload")
 async def upload_audio(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     mood: str = Form(""),
 ):
-    # Validate by extension as fallback
     filename = file.filename or ""
     ext = Path(filename).suffix.lower()
 
@@ -238,7 +313,8 @@ async def upload_audio(
     if not content_type_ok and not extension_ok:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported format '{file.content_type}'. Please upload WAV, MP3, MP4, M4A or AAC.",
+            detail=f"Unsupported format '{file.content_type}'. "
+                   "Please upload WAV, MP3, MP4, M4A or AAC.",
         )
 
     task_id = uuid.uuid4().hex
@@ -256,7 +332,8 @@ async def upload_audio(
                 if total_bytes > MAX_UPLOAD_BYTES:
                     raise HTTPException(
                         status_code=413,
-                        detail=f"File too large. Maximum size is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+                        detail=f"File too large. Max size is "
+                               f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
                     )
                 await out.write(chunk)
     except HTTPException:
@@ -269,13 +346,15 @@ async def upload_audio(
 
     logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
 
-    tasks[task_id] = {
+    # Save task to disk immediately
+    save_task(task_id, {
         "status": "PENDING",
         "result_file": None,
         "error": None,
         "progress": "⏳ Queued, waiting to start...",
         "mood": mood,
-    }
+        "file_path": str(file_path.resolve()),
+    })
 
     background_tasks.add_task(
         process_audio,
@@ -289,39 +368,38 @@ async def upload_audio(
 
 @app.get("/status/{task_id}")
 async def get_status(task_id: str):
-    if task_id not in tasks:
+    task = load_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    entry = tasks[task_id]
     response: dict = {
         "task_id": task_id,
-        "status": entry["status"],
-        "progress": entry.get("progress", ""),
-        "mood": entry.get("mood", ""),
+        "status": task.get("status", "UNKNOWN"),
+        "progress": task.get("progress", ""),
+        "mood": task.get("mood", ""),
     }
 
-    if entry["status"] == "SUCCESS":
-        response["result_file"] = entry["result_file"]
-    elif entry["status"] == "FAILURE":
-        response["error"] = entry["error"] or "Unknown error"
+    if task.get("status") == "SUCCESS":
+        response["result_file"] = task.get("result_file")
+    elif task.get("status") == "FAILURE":
+        response["error"] = task.get("error") or "Unknown error"
 
     return response
 
 
 @app.get("/download/{task_id}")
 async def download_result(task_id: str):
-    if task_id not in tasks:
+    task = load_task(task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    entry = tasks[task_id]
-
-    if entry["status"] != "SUCCESS":
+    if task.get("status") != "SUCCESS":
         raise HTTPException(
             status_code=400,
-            detail=f"Task not complete. Status: {entry['status']}",
+            detail=f"Task not complete. Status: {task.get('status')}",
         )
 
-    output_path = Path(entry["result_file"])
+    output_path = Path(task["result_file"])
 
     if not output_path.is_file():
         raise HTTPException(
@@ -338,4 +416,28 @@ async def download_result(task_id: str):
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "version": "0.4.0"}
+    # Count tasks by status for monitoring
+    total = pending = processing = success = failed = 0
+    for f in TASKS_DIR.glob("*.json"):
+        try:
+            data = json.loads(f.read_text())
+            total += 1
+            s = data.get("status", "")
+            if s == "PENDING":       pending += 1
+            elif s == "PROCESSING":  processing += 1
+            elif s == "SUCCESS":     success += 1
+            elif s == "FAILURE":     failed += 1
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "version": "0.5.0",
+        "tasks": {
+            "total": total,
+            "pending": pending,
+            "processing": processing,
+            "success": success,
+            "failed": failed,
+        }
+    }
