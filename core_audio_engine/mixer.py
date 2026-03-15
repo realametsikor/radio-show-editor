@@ -1,6 +1,7 @@
 """
 Professional radio mixer using ffmpeg sidechaincompress.
-Optimized for NotebookLM audio with dynamic mid-roll music breaks!
+Optimized for NotebookLM audio with dynamic mid-roll music breaks,
+cold open intro pacing, and walk-off outro swells!
 """
 from __future__ import annotations
 
@@ -53,9 +54,9 @@ def create_radio_breaks(voice: AudioSegment) -> AudioSegment:
     
     result = voice
     for bp in break_points:
-        # Insert 4 seconds of pure silence! 
+        # Insert 2.5 seconds of pure silence! 
         # The compressor will release, and music will swell to full volume.
-        break_silence = AudioSegment.silent(duration=4000, frame_rate=voice.frame_rate)
+        break_silence = AudioSegment.silent(duration=2500, frame_rate=voice.frame_rate)
         result = result[:bp] + break_silence + result[bp:]
         
     logger.info(f"Successfully added {len(break_points)} music break(s).")
@@ -104,8 +105,8 @@ def mix_with_ducking(
     tmp_music = output_path.parent / "_tmp_music_prepared.wav"
 
     try:
-        # 1. Prepare Voice (Inject the Radio Breaks!)
-        logger.info("Preparing voice track (adding breaks)...")
+        # 1. Prepare Voice (Inject the Radio Breaks & Intro/Outro!)
+        logger.info("Preparing voice track (adding breaks and padding)...")
         voice_audio = AudioSegment.from_wav(str(voice_path))
         if voice_audio.channels == 1:
             voice_audio = voice_audio.set_channels(2)
@@ -113,6 +114,16 @@ def mix_with_ducking(
             voice_audio = voice_audio.set_frame_rate(44100)
             
         voice_audio = create_radio_breaks(voice_audio)
+
+        # --- NEW INTRO & OUTRO TIMING ---
+        # 3 seconds of silence at the start so the music plays solo
+        intro_pad = AudioSegment.silent(duration=3000, frame_rate=44100)
+        # 5 seconds of silence at the end so the music swells and fades out
+        outro_pad = AudioSegment.silent(duration=5000, frame_rate=44100)
+        
+        voice_audio = intro_pad + voice_audio + outro_pad
+        # --------------------------------
+
         voice_audio.export(str(tmp_voice), format="wav")
         voice_duration_ms = len(voice_audio)
 
