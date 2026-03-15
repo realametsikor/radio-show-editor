@@ -3,10 +3,46 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model cache — keeps pyannote + whisper in memory between requests
+# ---------------------------------------------------------------------------
+_PIPELINE_CACHE: dict = {}
+_WHISPER_CACHE: dict = {}
+
+
+def _get_diarization_pipeline(hf_token: str):
+    """Load and cache the pyannote pipeline."""
+    if "pipeline" not in _PIPELINE_CACHE:
+        from pyannote.audio import Pipeline
+        logger.info("Loading pyannote pipeline (first time — caching)...")
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=hf_token,
+        )
+        _PIPELINE_CACHE["pipeline"] = pipeline
+        logger.info("Pyannote pipeline cached ✅")
+    else:
+        logger.info("Using cached pyannote pipeline ✅")
+    return _PIPELINE_CACHE["pipeline"]
+
+
+def _get_whisper_model(model_size: str = "base"):
+    """Load and cache the Whisper model."""
+    if model_size not in _WHISPER_CACHE:
+        import whisper
+        logger.info("Loading Whisper '%s' model (first time — caching)...", model_size)
+        model = whisper.load_model(model_size)
+        _WHISPER_CACHE[model_size] = model
+        logger.info("Whisper '%s' model cached ✅", model_size)
+    else:
+        logger.info("Using cached Whisper '%s' model ✅", model_size)
+    return _WHISPER_CACHE[model_size]
 
 
 def run_pipeline(
@@ -18,7 +54,6 @@ def run_pipeline(
     hf_token: Optional[str] = None,
     mood: str = "",
 ) -> Path:
-    import whisper
     from pydub import AudioSegment, effects
 
     from core_audio_engine.diarize import diarize_speakers
@@ -27,11 +62,37 @@ def run_pipeline(
     from core_audio_engine.sfx import apply_sfx, generate_intro, generate_outro
     from core_audio_engine.mixer import mix_with_ducking
 
-    raw_audio = Path(raw_audio)
-    music_path = Path(music_path)
+    raw_audio   = Path(raw_audio)
+    music_path  = Path(music_path)
     output_path = Path(output_path)
-    output_dir = Path(output_dir)
+    output_dir  = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Pre-warm models before pipeline starts
+    logger.info("Pre-warming models...")
+    if hf_token:
+        try:
+            _get_diarization_pipeline(hf_token)
+        except Exception as exc:
+            logger.warning("Could not pre-warm diarization pipeline: %s", exc)
+
+    # Decide whisper model size based on audio length
+    try:
+        audio_len_s = len(AudioSegment.from_wav(str(raw_audio))) / 1000
+    except Exception:
+        audio_len_s = 0
+
+    # Use tiny for long files to save time, small for short files
+    whisper_model_size = "tiny" if audio_len_s > 600 else "base"
+    logger.info(
+        "Audio length: %.0fs — using Whisper '%s'",
+        audio_len_s, whisper_model_size
+    )
+
+    try:
+        _get_whisper_model(whisper_model_size)
+    except Exception as exc:
+        logger.warning("Could not pre-warm Whisper: %s", exc)
 
     # ── Step 1: Diarize ────────────────────────────────────────────────
     logger.info("Step 1/7 — Diarizing speakers …")
@@ -42,12 +103,29 @@ def run_pipeline(
     )
     logger.info("Diarization complete: %s, %s", host_a, host_b)
 
-    # ── Step 2: Enhance each speaker's voice ───────────────────────────
-    logger.info("Step 2/7 — Enhancing voice quality …")
+    # ── Step 2: Enhance speakers in parallel ───────────────────────────
+    logger.info("Step 2/7 — Enhancing voices in parallel …")
     host_a_enhanced = output_dir / "host_A_enhanced.wav"
     host_b_enhanced = output_dir / "host_B_enhanced.wav"
-    enhance_voice(host_a, host_a_enhanced)
-    enhance_voice(host_b, host_b_enhanced)
+
+    # Skip enhancement for very long files to save time
+    if audio_len_s > 1200:  # 20+ mins
+        logger.info("Long file detected — skipping enhancement to save time")
+        shutil.copy(str(host_a), str(host_a_enhanced))
+        shutil.copy(str(host_b), str(host_b_enhanced))
+    else:
+        # Run both enhancements in parallel
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_a = executor.submit(enhance_voice, host_a, host_a_enhanced)
+            future_b = executor.submit(enhance_voice, host_b, host_b_enhanced)
+            try:
+                future_a.result()
+                future_b.result()
+                logger.info("Both speakers enhanced in parallel ✅")
+            except Exception as exc:
+                logger.warning("Parallel enhancement failed: %s", exc)
+                shutil.copy(str(host_a), str(host_a_enhanced))
+                shutil.copy(str(host_b), str(host_b_enhanced))
 
     # ── Step 3: Combine both speakers ──────────────────────────────────
     logger.info("Step 3/7 — Combining speaker tracks …")
@@ -64,32 +142,37 @@ def run_pipeline(
         shutil.copy(str(host_a_enhanced), str(combined_path))
 
     # ── Step 4: Transcribe + Claude production plan ─────────────────────
-    logger.info("Step 4/7 — Claude AI production analysis …")
+    logger.info("Step 4/7 — Transcribing + Claude AI production analysis …")
     words = []
     transcript = ""
     try:
-        model = whisper.load_model("small")
+        model = _get_whisper_model(whisper_model_size)
         result = model.transcribe(
             str(combined_path),
             word_timestamps=True,
-            language="en"
+            language="en",
+            # Speed optimizations
+            fp16=False,
+            condition_on_previous_text=False,
         )
         transcript = result.get("text", "")
         for seg in result.get("segments", []):
             for w in seg.get("words", []):
                 words.append({
-                    "word": w.get("word", "").strip(),
+                    "word":  w.get("word", "").strip(),
                     "start": w.get("start", 0),
-                    "end": w.get("end", 0),
+                    "end":   w.get("end", 0),
                 })
-        logger.info("Transcribed %d words", len(words))
-        logger.info("Transcript preview: %s", transcript[:200])
+        logger.info(
+            "Transcribed %d words — preview: %s",
+            len(words), transcript[:150]
+        )
     except Exception as exc:
         logger.warning("Transcription failed: %s", exc)
 
     available_sfx = [
         "applause", "laugh", "dramatic", "cash", "shock",
-        "success", "fail", "transition", "crowd_wow", "rimshot"
+        "success", "fail", "transition", "crowd_wow", "rimshot",
     ]
 
     audio_duration = len(AudioSegment.from_wav(str(combined_path))) / 1000.0
@@ -102,9 +185,9 @@ def run_pipeline(
         mood=mood,
     )
 
-    logger.info("Show title: %s", production_plan.get("show_title", "Radio Show"))
-    logger.info("Tagline: %s", production_plan.get("show_tagline", ""))
-    logger.info("Summary: %s", production_plan.get("show_summary", ""))
+    logger.info("Show: %s — %s",
+                production_plan.get("show_title"),
+                production_plan.get("show_tagline"))
 
     # ── Step 5: Apply SFX ──────────────────────────────────────────────
     logger.info("Step 5/7 — Applying AI-directed sound effects …")
@@ -116,7 +199,7 @@ def run_pipeline(
             sfx_cues=production_plan.get("sfx_cues", []),
         )
         voice_to_mix = combined_sfx_path
-        logger.info("SFX applied successfully")
+        logger.info("SFX applied ✅")
     except Exception as exc:
         logger.warning("SFX failed: %s", exc)
         voice_to_mix = combined_path
@@ -130,27 +213,26 @@ def run_pipeline(
         output_path=mixed_path,
         music_curve=production_plan.get("music_curve"),
     )
-    logger.info("Mixing complete")
+    logger.info("Mixing complete ✅")
 
     # ── Step 7: Intro + Outro + Master ────────────────────────────────
     logger.info("Step 7/7 — Adding intro/outro and mastering …")
     pre_master_path = output_dir / "pre_master.wav"
     try:
-        mixed = AudioSegment.from_wav(str(mixed_path))
-        intro = generate_intro(duration_ms=3500)
-        outro = generate_outro(duration_ms=3000)
-        gap = AudioSegment.silent(duration=600)
-        full = intro + gap + mixed + gap + outro
+        mixed    = AudioSegment.from_wav(str(mixed_path))
+        intro    = generate_intro(duration_ms=3500)
+        outro    = generate_outro(duration_ms=3000)
+        gap      = AudioSegment.silent(duration=600)
+        full     = intro + gap + mixed + gap + outro
         full.export(str(pre_master_path), format="wav")
         logger.info(
-            "Added intro/outro → total duration: %.1fs",
+            "Intro/outro added → total: %.1fs",
             len(full) / 1000
         )
     except Exception as exc:
         logger.warning("Intro/outro failed: %s", exc)
         shutil.copy(str(mixed_path), str(pre_master_path))
 
-    # Master to broadcast standard
     master_audio(pre_master_path, output_path)
     logger.info("🎙️ Pipeline complete → %s", output_path)
 
