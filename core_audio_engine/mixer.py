@@ -1,4 +1,3 @@
-"""
 Professional radio mixer — pure pydub, no ffmpeg filter_complex.
 Implements proper sidechain ducking with chunk-based voice activity detection.
 """
