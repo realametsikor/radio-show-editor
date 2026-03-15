@@ -5,6 +5,7 @@ and AI-driven music curve automation.
 from __future__ import annotations
 
 import logging
+import math
 import shutil
 from pathlib import Path
 
@@ -191,8 +192,8 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    music_full_db: float   = -22,   # Music volume during silence/pauses
-    music_ducked_db: float = -38,   # Music volume when voice is active
+    music_full_db: float   = -26,   # Music volume during silence/pauses (reduced for subtlety)
+    music_ducked_db: float = -42,   # Music volume when voice is active (quieter under speech)
     attack_ms: int         = 150,   # How fast music ducks (ms)
     release_ms: int        = 600,   # How fast music comes back (ms)
 ) -> Path:
@@ -222,9 +223,6 @@ def mix_with_ducking(
     # ── Load voice ─────────────────────────────────────────────────────
     logger.info("Loading voice...")
     voice = AudioSegment.from_wav(str(voice_path))
-
-    # Add natural pauses to AI speech
-    voice = add_natural_pauses(voice)
 
     # Normalize voice to consistent level
     voice = effects.normalize(voice)
@@ -280,6 +278,38 @@ def mix_with_ducking(
     else:
         logger.info("No music curve — using voice-only ducking")
 
+    # ── Detect silence gaps for music swells ───────────────────────────
+    # Find stretches of silence ≥ 1.5s and mark them for a gentle swell
+    swell_boost = [0.0] * len(smooth_activity)
+    MIN_GAP_CHUNKS = int(1500 / CHUNK_MS)  # 1.5s minimum gap for a swell
+    SWELL_MAX_DB = 6.0  # max boost during a swell (from ducked baseline)
+
+    i = 0
+    while i < len(smooth_activity):
+        if not smooth_activity[i]:
+            # Start of silence gap
+            gap_start = i
+            while i < len(smooth_activity) and not smooth_activity[i]:
+                i += 1
+            gap_end = i
+            gap_len = gap_end - gap_start
+
+            if gap_len >= MIN_GAP_CHUNKS:
+                # Create a smooth bell-curve swell across this gap
+                for j in range(gap_len):
+                    # Sine-based bell curve: ramps up then back down
+                    t = j / max(gap_len - 1, 1)
+                    boost = SWELL_MAX_DB * math.sin(t * math.pi)
+                    idx = gap_start + j
+                    if idx < len(swell_boost):
+                        swell_boost[idx] = boost
+        else:
+            i += 1
+
+    swell_count = sum(1 for b in swell_boost if b > 0)
+    if swell_count:
+        logger.info("Music swells: %d chunks boosted across silence gaps", swell_count)
+
     # ── Build ducked music track ───────────────────────────────────────
     logger.info("Building ducked music track...")
 
@@ -296,7 +326,7 @@ def mix_with_ducking(
             curve_intensity = curve_intensities[i]
             # Music curve controls the "full" level; ducking goes below that
             # Intensity 0.0 = silence, 1.0 = full music volume
-            curve_db = -48 + (curve_intensity * 26)  # Range: -48dB to -22dB
+            curve_db = -48 + (curve_intensity * 22)  # Range: -48dB to -26dB
             if is_speaking:
                 # Duck below the curve level, but never louder than ducked_db
                 target_db = min(music_ducked_db, curve_db - 22)
@@ -304,6 +334,10 @@ def mix_with_ducking(
                 target_db = curve_db
         else:
             target_db = music_ducked_db if is_speaking else music_full_db
+
+        # Apply swell boost during silence gaps (gentle rise then fall)
+        if not is_speaking and i < len(swell_boost) and swell_boost[i] > 0:
+            target_db = min(target_db + swell_boost[i], music_full_db + 4)
 
         # Smooth transition
         if current_db > target_db:
