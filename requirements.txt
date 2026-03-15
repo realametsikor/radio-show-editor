@@ -1,0 +1,22 @@
+# FastAPI & server
+fastapi>=0.110,<1
+uvicorn[standard]>=0.29,<1
+python-multipart>=0.0.9
+aiofiles>=23.2,<25
+
+# Audio processing
+pydub>=0.25
+ffmpeg-python>=0.2.0
+openai-whisper>=20231117
+
+# Speaker diarization
+pyannote.audio>=3.1
+torch>=2.0
+torchaudio>=2.0
+
+# Utility
+soundfile>=0.12
+librosa>=0.10
+
+# External APIs
+requests>=2.31.0
