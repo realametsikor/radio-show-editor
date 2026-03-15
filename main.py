@@ -5,6 +5,7 @@ import os
 import uuid
 import json
 import time
+import subprocess
 from pathlib import Path
 
 import aiofiles
@@ -62,6 +63,20 @@ def process_audio(task_id: str, file_path: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
+        # --- THE NEW AUDIO SANITIZER ---
+        logger.info("Sanitizing and normalizing audio for Pyannote...")
+        clean_audio_path = fp.parent / "clean_input.wav"
+        
+        # This instantly converts ANY file to a perfect 16kHz Mono WAV
+        subprocess.run([
+            "ffmpeg", "-i", str(fp), 
+            "-ar", "16000", 
+            "-ac", "1", 
+            str(clean_audio_path), 
+            "-y"
+        ], check=True)
+        # -------------------------------
+
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
         
@@ -80,8 +95,9 @@ def process_audio(task_id: str, file_path: str) -> None:
         with open(music_path, "wb") as f:
             f.write(music_data)
 
+        # Notice we are passing 'clean_audio_path' now, NOT 'fp'
         final_path = run_pipeline(
-            raw_audio=str(fp),
+            raw_audio=str(clean_audio_path),
             music_path=music_path,
             output_path=str(output_file),
             output_dir=str(output_dir),
