@@ -1,4 +1,4 @@
-engine.py — Full radio show production pipeline.
+"""engine.py — Full radio show production pipeline.
 
 Steps:
 1. Diarize — separate speakers
@@ -146,9 +146,10 @@ def run_pipeline(
         a = effects.normalize(a)
         b = effects.normalize(b)
 
-        # Reduce each by 3dB before combining to prevent clipping
-        a = a - 3
-        b = b - 3
+        # Reduce each by 4.5dB before combining to ensure headroom
+        # (two normalized signals overlaid can peak at +6dB)
+        a = a - 4.5
+        b = b - 4.5
 
         combined = a.overlay(b)
         combined = effects.normalize(combined)
@@ -248,23 +249,37 @@ def run_pipeline(
     pre_master = output_dir / "pre_master.wav"
     try:
         mixed = AudioSegment.from_wav(str(mixed_path))
-        intro = generate_intro(duration_ms=3500, mood=mood)
-        outro = generate_outro(duration_ms=3000, mood=mood)
-        gap   = AudioSegment.silent(duration=400)
+        intro = generate_intro(duration_ms=4000, mood=mood)
+        outro = generate_outro(duration_ms=3500, mood=mood)
 
-        # Ensure all parts are stereo
+        # Ensure all parts are stereo and same sample rate
         if intro.channels == 1:
             intro = intro.set_channels(2)
+        if intro.frame_rate != 44100:
+            intro = intro.set_frame_rate(44100)
         if mixed.channels == 1:
             mixed = mixed.set_channels(2)
+        if mixed.frame_rate != 44100:
+            mixed = mixed.set_frame_rate(44100)
         if outro.channels == 1:
             outro = outro.set_channels(2)
+        if outro.frame_rate != 44100:
+            outro = outro.set_frame_rate(44100)
 
-        full = intro + gap + mixed + gap + outro
+        # Crossfade intro into main content for smooth transition
+        # and crossfade main content into outro
+        xfade_in = min(800, len(intro) // 3, len(mixed) // 10)
+        xfade_out = min(1000, len(outro) // 3, len(mixed) // 10)
+
+        full = intro.append(mixed, crossfade=xfade_in)
+        full = full.append(outro, crossfade=xfade_out)
+
         full.export(str(pre_master), format="wav")
         logger.info(
-            "✅ Full show assembled: %.1f mins",
+            "✅ Full show assembled: %.1f mins (xfade in=%dms out=%dms)",
             len(full) / 60000,
+            xfade_in,
+            xfade_out,
         )
     except Exception as exc:
         logger.warning("Intro/outro failed: %s", exc)

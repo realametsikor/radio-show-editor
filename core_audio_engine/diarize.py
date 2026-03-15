@@ -18,8 +18,6 @@ def diarize_speakers(
     num_speakers: int = 2,
     min_segment_ms: int = 100,
 ) -> tuple[Path, Path]:
-    from pyannote.audio import Pipeline
-
     audio_path = Path(audio_path)
     output_dir = Path(output_dir)
 
@@ -35,11 +33,18 @@ def diarize_speakers(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Loading pyannote speaker-diarization pipeline …")
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        token=token,
-    )
+    # Use cached pipeline from engine if available, otherwise load fresh
+    try:
+        from core_audio_engine.engine import _get_pipeline
+        logger.info("Loading pyannote pipeline (cached) …")
+        pipeline = _get_pipeline(token)
+    except Exception:
+        from pyannote.audio import Pipeline
+        logger.info("Loading pyannote speaker-diarization pipeline (fresh) …")
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=token,
+        )
 
     logger.info("Running diarization on '%s' (expecting %d speakers) …", audio_path, num_speakers)
     result = pipeline(str(audio_path), num_speakers=num_speakers)
