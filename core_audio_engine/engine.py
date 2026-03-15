@@ -66,17 +66,15 @@ def run_pipeline(
         audio_len_s = 120
     logger.info("Audio: %.0fs (%.1f mins)", audio_len_s, audio_len_s / 60)
 
-    # Whisper model: skip entirely for very long files to save time
-    # For 35-min audio, Whisper alone takes 20-30 mins on CPU
-    # Instead use keyword fallback in producer.py
-    if audio_len_s > 1800:       # 30+ mins — skip transcription entirely
+    # Whisper model selection — skip for very long files
+    if audio_len_s > 1800:       # 30+ mins
         whisper_size = None
-        logger.info("Very long audio — skipping Whisper transcription (speed priority)")
-    elif audio_len_s > 600:      # 10-30 mins — tiny model
+        logger.info("Long audio — skipping transcription to save time")
+    elif audio_len_s > 600:      # 10-30 mins
         whisper_size = "tiny"
-    elif audio_len_s > 180:      # 3-10 mins — base model
+    elif audio_len_s > 180:      # 3-10 mins
         whisper_size = "base"
-    else:                         # < 3 mins — small for best accuracy
+    else:
         whisper_size = "small"
 
     # Pre-warm models
@@ -100,13 +98,13 @@ def run_pipeline(
     )
     logger.info("✅ Diarized: A=%s B=%s", host_a.name, host_b.name)
 
-    # ── Step 2: Enhance voices ─────────────────────────────────────────
+    # ── Step 2: Enhance voices in parallel ────────────────────────────
     logger.info("STEP 2/7 — Enhancing voices")
     ha_enh = output_dir / "host_A_enhanced.wav"
     hb_enh = output_dir / "host_B_enhanced.wav"
 
     if audio_len_s > 1200:
-        logger.info("Long file — skipping enhancement to save time")
+        logger.info("Long file — skipping enhancement")
         shutil.copy(str(host_a), str(ha_enh))
         shutil.copy(str(host_b), str(hb_enh))
     else:
@@ -133,13 +131,17 @@ def run_pipeline(
         combined = a.overlay(b)
         combined = effects.normalize(combined)
         combined.export(str(combined_path), format="wav")
-        logger.info("✅ Combined: %.1fs dBFS=%.1f", len(combined)/1000, combined.dBFS)
+        logger.info(
+            "✅ Combined: %.1fs dBFS=%.1f",
+            len(combined) / 1000,
+            combined.dBFS,
+        )
     except Exception as exc:
         logger.warning("Combine failed: %s", exc)
         shutil.copy(str(ha_enh), str(combined_path))
 
-    # ── Step 4: Add natural pauses ────────────────────────────────────
-    logger.info("STEP 4/7 — Adding natural pauses + Claude analysis")
+    # ── Step 4: Natural pauses ─────────────────────────────────────────
+    logger.info("STEP 4/7 — Adding natural pauses")
     paused_path = output_dir / "combined_paused.wav"
     try:
         combined_audio = AudioSegment.from_wav(str(combined_path))
@@ -151,7 +153,8 @@ def run_pipeline(
         logger.warning("Pause injection failed: %s", exc)
         voice_source = combined_path
 
-    # ── Step 5: Transcribe + Claude production plan ────────────────────
+    # ── Step 5: Transcribe + Claude production ─────────────────────────
+    logger.info("STEP 5/7 — Claude AI analysis")
     words      = []
     transcript = ""
 
@@ -179,14 +182,6 @@ def run_pipeline(
             logger.info("✅ Transcribed %d words", len(words))
         except Exception as exc:
             logger.warning("Transcription failed: %s", exc)
-    else:
-        logger.info("Skipping transcription (audio too long — using keyword fallback)")
-
-    available_sfx = [
-        "applause", "laugh", "dramatic", "cash", "shock",
-        "success", "fail", "transition", "crowd_wow",
-        "rimshot", "news_sting",
-    ]
 
     audio_duration = len(AudioSegment.from_wav(str(voice_source))) / 1000.0
 
@@ -194,19 +189,22 @@ def run_pipeline(
         transcript=transcript,
         words=words,
         audio_duration=audio_duration,
-        available_sfx=available_sfx,
+        available_sfx=[
+            "applause", "laugh", "dramatic", "cash", "shock",
+            "success", "fail", "transition", "crowd_wow",
+            "rimshot", "news_sting",
+        ],
         mood=mood,
     )
     logger.info(
-        "✅ Plan: '%s' — %d SFX | %d segments",
+        "✅ Plan: '%s' — %d SFX",
         production_plan.get("show_title", ""),
         len(production_plan.get("sfx_cues", [])),
-        len(production_plan.get("segments", [])),
     )
 
     # ── Step 6: Apply SFX ─────────────────────────────────────────────
-    logger.info("STEP 5/7 — Applying SFX")
-    sfx_path = output_dir / "combined_sfx.wav"
+    logger.info("STEP 6/7 — Applying SFX")
+    sfx_path = output_dir / "voice_with_sfx.wav"
     try:
         apply_sfx(
             audio_path=voice_source,
@@ -220,7 +218,7 @@ def run_pipeline(
         voice_to_mix = voice_source
 
     # ── Step 7: Mix with music ─────────────────────────────────────────
-    logger.info("STEP 6/7 — Mixing")
+    logger.info("STEP 7/7 — Professional mixing")
     mixed_path = output_dir / "mixed.wav"
     mix_with_ducking(
         voice_path=voice_to_mix,
@@ -231,13 +229,16 @@ def run_pipeline(
     logger.info("✅ Mix complete")
 
     # ── Step 8: Intro + Outro + Master ────────────────────────────────
-    logger.info("STEP 7/7 — Intro, outro, mastering")
+    logger.info("STEP 8 — Intro, outro, mastering")
     pre_master = output_dir / "pre_master.wav"
     try:
         mixed = AudioSegment.from_wav(str(mixed_path))
         intro = generate_intro(duration_ms=3000, mood=mood)
         outro = generate_outro(duration_ms=2500, mood=mood)
         gap   = AudioSegment.silent(duration=300)
+
+        for seg in [intro, mixed, outro]:
+            pass  # type check
 
         if intro.channels == 1:
             intro = intro.set_channels(2)
