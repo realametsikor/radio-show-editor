@@ -15,7 +15,6 @@ from fastapi.responses import FileResponse
 
 logger = logging.getLogger(__name__)
 
-# --- NEW MINI-DATABASE LOGIC ---
 TASKS_FILE = Path("tasks_db.json")
 
 def load_tasks() -> dict:
@@ -32,9 +31,7 @@ def save_tasks():
     except Exception as e:
         logger.error(f"Failed to save tasks: {e}")
 
-# Load existing tasks from disk on startup
 tasks: dict[str, dict] = load_tasks()
-# -------------------------------
 
 app = FastAPI(title="Radio Show Editor API")
 
@@ -55,43 +52,38 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 
 
 def process_audio(task_id: str, file_path: str) -> None:
-    from core_audio_engine.engine import run_pipeline
-
-    tasks[task_id]["status"] = "PROCESSING"
-    save_tasks()
-
-    fp = Path(file_path)
-    if not fp.is_file():
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = f"Uploaded file not found: {fp}"
-        save_tasks()
-        return
-
-    output_dir = fp.parent / "output"
-    output_file = fp.parent / "radio_show_final.wav"
-    
-    logger.info("Fetching background music from direct links...")
-    music_path = str(fp.parent / "background_music.mp3")
-    
-    reliable_music_links = [
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
-        "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
-    ]
-    import random
-    chosen_url = random.choice(reliable_music_links)
-    
     try:
-        music_data = requests.get(chosen_url).content
+        # 1. IMMEDIATELY tell the frontend we have started!
+        tasks[task_id]["status"] = "PROCESSING"
+        save_tasks()
+
+        # 2. Safely import the engine inside the try block
+        from core_audio_engine.engine import run_pipeline
+
+        fp = Path(file_path)
+        if not fp.is_file():
+            raise FileNotFoundError(f"Uploaded file not found: {fp}")
+
+        output_dir = fp.parent / "output"
+        output_file = fp.parent / "radio_show_final.wav"
+        
+        logger.info("Fetching background music from direct links...")
+        music_path = str(fp.parent / "background_music.mp3")
+        
+        reliable_music_links = [
+            "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
+            "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
+            "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
+        ]
+        import random
+        chosen_url = random.choice(reliable_music_links)
+        
+        # Add a timeout so it doesn't hang forever downloading music
+        music_data = requests.get(chosen_url, timeout=15).content
         with open(music_path, "wb") as f:
             f.write(music_data)
-    except Exception as e:
-        tasks[task_id]["status"] = "FAILURE"
-        tasks[task_id]["error"] = f"Failed to download music: {e}"
-        save_tasks()
-        return
 
-    try:
+        # 3. Run the pipeline
         final_path = run_pipeline(
             raw_audio=str(fp),
             music_path=music_path,
@@ -99,10 +91,14 @@ def process_audio(task_id: str, file_path: str) -> None:
             output_dir=str(output_dir),
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
+        
+        # 4. Success!
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
         save_tasks()
+
     except Exception as exc:
+        # If ANYTHING goes wrong, tell the frontend immediately
         logger.exception("Pipeline failed")
         tasks[task_id]["status"] = "FAILURE"
         tasks[task_id]["error"] = str(exc)
@@ -130,7 +126,6 @@ async def upload_audio(background_tasks: BackgroundTasks, file: UploadFile = Fil
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
 
-    # Save extra metadata so we know what this file is later
     tasks[task_id] = {
         "task_id": task_id,
         "status": "PENDING", 
@@ -169,20 +164,15 @@ async def download_result(task_id: str):
     if not output_path.is_file():
         raise HTTPException(status_code=404, detail="Output file not found.")
     
-    # Send it back as a downloadable attachment
     return FileResponse(
         path=str(output_path), 
         media_type="audio/wav", 
         filename=f"Radio_Show_{entry.get('filename', 'Final')}.wav"
     )
 
-# --- NEW RECENT VAULT ENDPOINT ---
 @app.get("/recent")
 async def get_recent_shows():
-    """Returns a list of all successfully processed shows to download."""
     successful_shows = []
-    
-    # Sort tasks by newest first
     sorted_tasks = sorted(tasks.values(), key=lambda x: x.get("timestamp", 0), reverse=True)
     
     for t in sorted_tasks:
@@ -195,7 +185,6 @@ async def get_recent_shows():
             })
             
     return {"recent_shows": successful_shows}
-# ---------------------------------
 
 @app.get("/health")
 async def health_check():
