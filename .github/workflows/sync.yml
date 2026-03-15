@@ -12,14 +12,16 @@ jobs:
         with:
           fetch-depth: 0
           lfs: true
+
+      - name: Remove large binary from history
+        run: |
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+          pip install git-filter-repo
+          git filter-repo --path assets/background_music.wav.mp3 --invert-paths --force
+
       - name: Push to Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          git config user.email "ci@github.com"
-          git config user.name "GitHub Actions"
-          git rm --cached assets/background_music.wav.mp3 || true
-          echo "assets/background_music.wav.mp3" >> .gitignore
-          git add .gitignore
-          git commit -m "exclude large binary from HF sync" || true
           git push --force https://realametsikor:$HF_TOKEN@huggingface.co/spaces/realametsikor/radio-show-backend main
