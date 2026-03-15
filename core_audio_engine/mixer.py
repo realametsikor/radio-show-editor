@@ -1,6 +1,5 @@
 """Professional radio mixer — pure pydub, no ffmpeg filter_complex.
-Implements proper sidechain ducking with chunk-based voice activity detection
-and AI-driven music curve automation.
+Implements proper sidechain ducking with chunk-based voice activity detection.
 """
 from __future__ import annotations
 
@@ -14,18 +13,20 @@ from pydub.silence import detect_nonsilent
 
 logger = logging.getLogger(__name__)
 
-CHUNK_MS = 50  # 50ms chunks for smooth ducking
+# Increased from 50ms → 500ms = 10x faster processing
+# 500ms chunks are still smooth enough for good ducking
+CHUNK_MS = 500
 
 
 def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
     """Add micro-pauses to AI speech that has no natural breathing room."""
     try:
-        thresh = audio.dBFS - 14
+        thresh    = audio.dBFS - 14
         nonsilent = detect_nonsilent(
             audio,
             min_silence_len=200,
             silence_thresh=thresh,
-            seek_step=CHUNK_MS,
+            seek_step=50,
         )
         if not nonsilent or len(nonsilent) < 2:
             return audio
@@ -36,7 +37,6 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
         for i, (start, end) in enumerate(nonsilent):
             if start > prev_end:
                 gap = audio[prev_end:start]
-                # Extend short gaps slightly for breathing room
                 if len(gap) < 300:
                     gap = gap + AudioSegment.silent(
                         duration=min(100, len(gap)),
@@ -49,7 +49,6 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
                 chunk = chunk.fade_in(5).fade_out(5)
             result += chunk
 
-            # Add micro-pause every 5 speech bursts
             if i > 0 and i % 5 == 0 and i < len(nonsilent) - 1:
                 result += AudioSegment.silent(
                     duration=80,
@@ -60,7 +59,7 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
         if prev_end < len(audio):
             result += audio[prev_end:]
 
-        logger.info("Pauses: %.1fs → %.1fs", len(audio)/1000, len(result)/1000)
+        logger.info("Pauses: %.1fs → %.1fs", len(audio) / 1000, len(result) / 1000)
         return result
 
     except Exception as exc:
@@ -70,7 +69,7 @@ def add_natural_pauses(audio: AudioSegment) -> AudioSegment:
 
 def _detect_voice_activity(voice: AudioSegment, chunk_ms: int = CHUNK_MS) -> list[bool]:
     """Return list of booleans indicating voice activity per chunk."""
-    thresh = voice.dBFS - 12  # 12dB below mean = silence
+    thresh = voice.dBFS - 12
     active = []
     for i in range(0, len(voice), chunk_ms):
         chunk = voice[i:i + chunk_ms]
@@ -83,16 +82,15 @@ def _detect_voice_activity(voice: AudioSegment, chunk_ms: int = CHUNK_MS) -> lis
     return active
 
 
-def _smooth_activity(activity: list[bool], lookahead: int = 4, lookbehind: int = 2) -> list[bool]:
-    """
-    Smooth voice activity to prevent rapid ducking.
-    Lookahead: start ducking before voice (anticipate)
-    Lookbehind: keep ducked briefly after voice ends (hold)
-    """
+def _smooth_activity(
+    activity: list[bool],
+    lookahead: int = 2,
+    lookbehind: int = 1,
+) -> list[bool]:
+    """Smooth voice activity — lookahead/lookbehind in chunks (500ms each)."""
     n      = len(activity)
     smooth = list(activity)
 
-    # Lookahead — if voice starts soon, duck now
     for i in range(n):
         if not smooth[i]:
             for j in range(1, lookahead + 1):
@@ -100,7 +98,6 @@ def _smooth_activity(activity: list[bool], lookahead: int = 4, lookbehind: int =
                     smooth[i] = True
                     break
 
-    # Lookbehind — hold duck after voice ends
     for i in range(n - 1, -1, -1):
         if not smooth[i]:
             for j in range(1, lookbehind + 1):
@@ -111,79 +108,37 @@ def _smooth_activity(activity: list[bool], lookahead: int = 4, lookbehind: int =
     return smooth
 
 
-def _interpolate_music_curve(
-    music_curve: list[dict] | None,
-    total_ms: int,
-    chunk_ms: int,
-) -> list[float] | None:
-    """
-    Convert Claude AI music curve into per-chunk intensity values (0.0 - 1.0).
-    Returns None if no valid curve is provided.
-    """
-    if not music_curve or len(music_curve) < 2:
-        return None
-
-    # Sort by timestamp and convert to ms
-    points = sorted(music_curve, key=lambda p: float(p.get("timestamp", 0)))
-    curve_pts = []
-    for p in points:
-        t_ms = int(float(p.get("timestamp", 0)) * 1000)
-        intensity = max(0.0, min(1.0, float(p.get("intensity", 0.5))))
-        curve_pts.append((t_ms, intensity))
-
-    num_chunks = (total_ms + chunk_ms - 1) // chunk_ms
-    intensities = []
-
-    for i in range(num_chunks):
-        pos_ms = i * chunk_ms
-
-        # Find surrounding curve points for interpolation
-        if pos_ms <= curve_pts[0][0]:
-            intensities.append(curve_pts[0][1])
-        elif pos_ms >= curve_pts[-1][0]:
-            intensities.append(curve_pts[-1][1])
-        else:
-            # Linear interpolation between surrounding points
-            for j in range(len(curve_pts) - 1):
-                t0, v0 = curve_pts[j]
-                t1, v1 = curve_pts[j + 1]
-                if t0 <= pos_ms <= t1:
-                    if t1 == t0:
-                        intensities.append(v0)
-                    else:
-                        frac = (pos_ms - t0) / (t1 - t0)
-                        intensities.append(v0 + frac * (v1 - v0))
-                    break
-            else:
-                intensities.append(0.5)
-
-    return intensities
-
-
 def _loop_music_with_crossfade(
     music: AudioSegment,
     target_ms: int,
-    crossfade_ms: int = 3000,
+    crossfade_ms: int = 2000,
 ) -> AudioSegment:
-    """
-    Loop music to reach target_ms with smooth crossfades between loops.
-    Avoids jarring hard-cut transitions.
-    """
+    """Loop music with crossfades to avoid hard cuts."""
     if len(music) >= target_ms:
         return music[:target_ms]
 
-    # Ensure crossfade doesn't exceed half the music length
-    xfade = min(crossfade_ms, len(music) // 3)
-
+    xfade  = min(crossfade_ms, len(music) // 3)
     result = music
     while len(result) < target_ms:
-        if xfade > 50:
-            # Crossfade: overlap end of current with start of next loop
-            result = result.append(music, crossfade=xfade)
-        else:
-            result = result + music
+        result = result.append(music, crossfade=xfade) if xfade > 50 else result + music
 
     return result[:target_ms]
+
+
+def _batch_concat(segments: list[AudioSegment], batch_size: int = 100) -> AudioSegment:
+    """Efficient batch concatenation — avoids O(n²) cost."""
+    if not segments:
+        return AudioSegment.empty()
+    while len(segments) > 1:
+        batches = []
+        for i in range(0, len(segments), batch_size):
+            batch    = segments[i:i + batch_size]
+            combined = batch[0]
+            for seg in batch[1:]:
+                combined = combined + seg
+            batches.append(combined)
+        segments = batches
+    return segments[0]
 
 
 def mix_with_ducking(
@@ -192,22 +147,14 @@ def mix_with_ducking(
     output_path: str | Path = "mixed_output.wav",
     music_curve: list[dict] | None = None,
     *,
-    music_full_db: float   = -26,   # Music volume during silence/pauses (reduced for subtlety)
-    music_ducked_db: float = -42,   # Music volume when voice is active (quieter under speech)
-    attack_ms: int         = 150,   # How fast music ducks (ms)
-    release_ms: int        = 600,   # How fast music comes back (ms)
+    music_full_db: float   = -30,   # FIXED: was -26, too loud. -30 = music audible but not overpowering
+    music_ducked_db: float = -46,   # Music under speech — very quiet so voice is clear
+    attack_ms: int         = 500,   # Match chunk size
+    release_ms: int        = 1500,  # Slow release — music comes back gradually
 ) -> Path:
     """
-    Professional radio mixing with sidechain ducking and AI music curve.
-
-    Strategy:
-    - Load voice + music separately
-    - Detect voice activity every 50ms
-    - Use Claude AI music curve to set base music intensity over time
-    - Smoothly lower music when voice is present (sidechain ducking)
-    - Smoothly raise music during pauses (music breathes naturally)
-    - Overlay voice on top at full volume
-    - Normalize final mix
+    Professional radio mix with sidechain ducking.
+    Music is clearly audible during pauses, quietly present during speech.
     """
     voice_path  = Path(voice_path)
     music_path  = Path(music_path)
@@ -220,74 +167,53 @@ def mix_with_ducking(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # ── Load voice ─────────────────────────────────────────────────────
+    # Load and prepare voice
     logger.info("Loading voice...")
     voice = AudioSegment.from_wav(str(voice_path))
-
-    # Normalize voice to consistent level
     voice = effects.normalize(voice)
-
     voice_ms = len(voice)
-    logger.info("Voice ready: %.1fs dBFS=%.1f", voice_ms/1000, voice.dBFS)
+    logger.info("Voice: %.1fs dBFS=%.1f", voice_ms / 1000, voice.dBFS)
 
-    # ── Load music ─────────────────────────────────────────────────────
+    # Load and prepare music
     logger.info("Loading music...")
     try:
         music = AudioSegment.from_file(str(music_path))
     except Exception as exc:
-        logger.warning("Music load failed: %s — exporting voice only", exc)
-        if voice.channels == 1:
-            voice = voice.set_channels(2)
-        voice.export(str(output_path), format="wav")
+        logger.warning("Music load failed: %s — voice only", exc)
+        voice.set_channels(2).export(str(output_path), format="wav")
         return output_path.resolve()
 
-    # Ensure stereo music for proper spatial feel
     if music.channels == 1:
         music = music.set_channels(2)
-
-    # Match sample rate
     if music.frame_rate != 44100:
         music = music.set_frame_rate(44100)
 
-    # Loop music with crossfade to cover full voice + buffer
-    target_music_ms = voice_ms + 10000
-    music = _loop_music_with_crossfade(music, target_music_ms)
-
-    # Normalize music
+    music = _loop_music_with_crossfade(music, voice_ms + 12000)
     music = effects.normalize(music)
-    logger.info("Music ready: %.1fs dBFS=%.1f", len(music)/1000, music.dBFS)
+    logger.info("Music: %.1fs dBFS=%.1f", len(music) / 1000, music.dBFS)
 
-    # ── Voice activity detection ───────────────────────────────────────
-    logger.info("Detecting voice activity...")
+    # Voice activity detection
+    logger.info("Detecting voice activity (chunk=%dms)...", CHUNK_MS)
     raw_activity    = _detect_voice_activity(voice, CHUNK_MS)
-    smooth_activity = _smooth_activity(raw_activity, lookahead=6, lookbehind=4)
+    smooth_activity = _smooth_activity(raw_activity, lookahead=2, lookbehind=1)
 
-    speaking_chunks = sum(smooth_activity)
-    total_chunks    = len(smooth_activity)
+    n_speaking = sum(smooth_activity)
+    n_total    = len(smooth_activity)
     logger.info(
-        "Voice activity: %d/%d chunks (%.0f%% speaking)",
-        speaking_chunks, total_chunks,
-        100 * speaking_chunks / max(total_chunks, 1),
+        "Activity: %d/%d chunks speaking (%.0f%%), %d silent",
+        n_speaking, n_total,
+        100 * n_speaking / max(n_total, 1),
+        n_total - n_speaking,
     )
 
-    # ── Compute AI music curve ─────────────────────────────────────────
-    curve_intensities = _interpolate_music_curve(music_curve, len(music), CHUNK_MS)
-    if curve_intensities:
-        logger.info("Music curve active: %d control points → %d chunk values",
-                     len(music_curve), len(curve_intensities))
-    else:
-        logger.info("No music curve — using voice-only ducking")
-
-    # ── Detect silence gaps for music swells ───────────────────────────
-    # Find stretches of silence ≥ 1.5s and mark them for a gentle swell
-    swell_boost = [0.0] * len(smooth_activity)
-    MIN_GAP_CHUNKS = int(1500 / CHUNK_MS)  # 1.5s minimum gap for a swell
-    SWELL_MAX_DB = 6.0  # max boost during a swell (from ducked baseline)
+    # Detect silence gaps for music swells
+    swell_boost     = [0.0] * len(smooth_activity)
+    MIN_GAP_CHUNKS  = max(1, int(2000 / CHUNK_MS))   # 2s min gap for swell
+    SWELL_MAX_DB    = 8.0                              # max boost during swell
 
     i = 0
     while i < len(smooth_activity):
         if not smooth_activity[i]:
-            # Start of silence gap
             gap_start = i
             while i < len(smooth_activity) and not smooth_activity[i]:
                 i += 1
@@ -295,141 +221,79 @@ def mix_with_ducking(
             gap_len = gap_end - gap_start
 
             if gap_len >= MIN_GAP_CHUNKS:
-                # Create a smooth bell-curve swell across this gap
                 for j in range(gap_len):
-                    # Sine-based bell curve: ramps up then back down
-                    t = j / max(gap_len - 1, 1)
+                    t     = j / max(gap_len - 1, 1)
                     boost = SWELL_MAX_DB * math.sin(t * math.pi)
-                    idx = gap_start + j
+                    idx   = gap_start + j
                     if idx < len(swell_boost):
                         swell_boost[idx] = boost
         else:
             i += 1
 
-    swell_count = sum(1 for b in swell_boost if b > 0)
-    if swell_count:
-        logger.info("Music swells: %d chunks boosted across silence gaps", swell_count)
-
-    # ── Build ducked music track ───────────────────────────────────────
-    logger.info("Building ducked music track...")
-
+    # Build ducked music
+    logger.info("Building ducked music (%d chunks)...", len(smooth_activity))
     attack_steps  = max(1, attack_ms  // CHUNK_MS)
     release_steps = max(1, release_ms // CHUNK_MS)
     current_db    = music_full_db
-
-    # Pre-allocate list for efficient concatenation
     music_chunks: list[AudioSegment] = []
 
     for i, is_speaking in enumerate(smooth_activity):
-        # Determine target dB — combine ducking with music curve
-        if curve_intensities and i < len(curve_intensities):
-            curve_intensity = curve_intensities[i]
-            # Music curve controls the "full" level; ducking goes below that
-            # Intensity 0.0 = silence, 1.0 = full music volume
-            curve_db = -48 + (curve_intensity * 22)  # Range: -48dB to -26dB
-            if is_speaking:
-                # Duck below the curve level, but never louder than ducked_db
-                target_db = min(music_ducked_db, curve_db - 22)
-            else:
-                target_db = curve_db
-        else:
-            target_db = music_ducked_db if is_speaking else music_full_db
+        target_db = music_ducked_db if is_speaking else music_full_db
 
-        # Apply swell boost during silence gaps (gentle rise then fall)
+        # Apply swell boost during silence
         if not is_speaking and i < len(swell_boost) and swell_boost[i] > 0:
-            target_db = min(target_db + swell_boost[i], music_full_db + 4)
+            target_db = min(target_db + swell_boost[i], music_full_db + 3)
 
         # Smooth transition
         if current_db > target_db:
-            # Ducking — fast attack
             step       = (current_db - target_db) / attack_steps
             current_db = max(target_db, current_db - step)
         elif current_db < target_db:
-            # Releasing — slower release for natural feel
             step       = (target_db - current_db) / release_steps
             current_db = min(target_db, current_db + step)
 
         pos_ms = i * CHUNK_MS
-        if pos_ms < len(music):
-            chunk = music[pos_ms:pos_ms + CHUNK_MS]
-            if len(chunk) == 0:
-                chunk = AudioSegment.silent(duration=CHUNK_MS, frame_rate=44100)
-        else:
+        chunk  = (
+            music[pos_ms:pos_ms + CHUNK_MS]
+            if pos_ms < len(music)
+            else AudioSegment.silent(duration=CHUNK_MS, frame_rate=44100)
+        )
+        if len(chunk) == 0:
             chunk = AudioSegment.silent(duration=CHUNK_MS, frame_rate=44100)
 
-        # Apply volume — convert dB target to adjustment
         if chunk.dBFS != float("-inf"):
-            db_adjust = current_db - chunk.dBFS
-            chunk     = chunk + db_adjust
+            chunk = chunk + (current_db - chunk.dBFS)
         else:
             chunk = chunk + current_db
 
         music_chunks.append(chunk)
 
-    # Efficient concatenation: batch join instead of O(n²) sum()
     ducked_music = _batch_concat(music_chunks)
-    logger.info(
-        "Ducked music: %.1fs dBFS=%.1f",
-        len(ducked_music)/1000,
-        ducked_music.dBFS,
-    )
+    logger.info("Ducked music: dBFS=%.1f", ducked_music.dBFS)
 
-    # ── Fade music in/out ──────────────────────────────────────────────
-    fade_in_ms  = 2000
-    fade_out_ms = 4000
-    ducked_music = ducked_music.fade_in(fade_in_ms).fade_out(fade_out_ms)
+    # Fade in/out
+    ducked_music = ducked_music.fade_in(2000).fade_out(4000)
 
-    # ── Convert voice to stereo ────────────────────────────────────────
-    if voice.channels == 1:
-        voice_stereo = voice.set_channels(2)
-    else:
-        voice_stereo = voice
+    # Convert voice to stereo
+    voice_stereo = voice.set_channels(2) if voice.channels == 1 else voice
 
-    # ── Overlay voice on ducked music ──────────────────────────────────
-    logger.info("Overlaying voice on ducked music...")
-
-    # Pad music to match voice length
+    # Pad if needed
     if len(ducked_music) < len(voice_stereo):
-        padding = AudioSegment.silent(
+        ducked_music = ducked_music + AudioSegment.silent(
             duration=len(voice_stereo) - len(ducked_music),
             frame_rate=44100,
         ).set_channels(2)
-        ducked_music = ducked_music + padding
 
+    # Overlay voice on music
     mixed = ducked_music.overlay(voice_stereo, position=0)
-
-    # ── Final mix processing ───────────────────────────────────────────
-    # Normalize to consistent level
     mixed = effects.normalize(mixed)
 
     logger.info(
-        "Mix complete: %.1fs dBFS=%.1f max=%.1f",
-        len(mixed)/1000,
+        "Mix done: %.1fs dBFS=%.1f max=%.1f",
+        len(mixed) / 1000,
         mixed.dBFS,
         mixed.max_dBFS,
     )
 
     mixed.export(str(output_path), format="wav")
     return output_path.resolve()
-
-
-def _batch_concat(segments: list[AudioSegment], batch_size: int = 200) -> AudioSegment:
-    """
-    Concatenate AudioSegments efficiently using batch reduction.
-    Avoids the O(n²) cost of sum(segments, AudioSegment.empty()).
-    """
-    if not segments:
-        return AudioSegment.empty()
-
-    # First pass: concatenate in batches
-    while len(segments) > 1:
-        batches = []
-        for i in range(0, len(segments), batch_size):
-            batch = segments[i:i + batch_size]
-            combined = batch[0]
-            for seg in batch[1:]:
-                combined = combined + seg
-            batches.append(combined)
-        segments = batches
-
-    return segments[0]
