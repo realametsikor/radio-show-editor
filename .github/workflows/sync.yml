@@ -16,8 +16,10 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          if [ -z "$HF_TOKEN" ]; then
-            echo "ERROR: HF_TOKEN secret is empty or not set!"
-            exit 1
-          fi
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+          git rm --cached assets/background_music.wav.mp3 || true
+          echo "assets/background_music.wav.mp3" >> .gitignore
+          git add .gitignore
+          git commit -m "exclude large binary from HF sync" || true
           git push --force https://realametsikor:$HF_TOKEN@huggingface.co/spaces/realametsikor/radio-show-backend main
