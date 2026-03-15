@@ -17,8 +17,7 @@ tasks: dict[str, dict] = {}
 
 app = FastAPI(
     title="Radio Show Editor API",
-    description="Upload a podcast, let the pipeline process it, download the finished radio show.",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 _raw_origins = os.environ.get(
@@ -37,8 +36,14 @@ app.add_middleware(
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+
+
+def set_progress(task_id: str, message: str):
+    """Update the progress message for a task."""
+    if task_id in tasks:
+        tasks[task_id]["progress"] = message
+        logger.info("[%s] %s", task_id[:8], message)
 
 
 def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
@@ -57,7 +62,8 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
     output_dir = job_dir / "output"
     output_file = job_dir / "radio_show_final.wav"
 
-    # Re-encode to clean 44100Hz mono WAV to fix sample mismatches
+    # Step 1: Re-encode
+    set_progress(task_id, "🔄 Re-encoding audio to clean WAV format...")
     clean_path = job_dir / "clean_upload.wav"
     try:
         subprocess.run(
@@ -68,28 +74,66 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             capture_output=True,
         )
         audio_to_process = clean_path
-        logger.info("Re-encoded audio → %s", audio_to_process)
-    except subprocess.CalledProcessError as exc:
-        logger.warning("ffmpeg re-encode failed, using original: %s", exc.stderr.decode())
+        set_progress(task_id, "✅ Audio re-encoded successfully")
+    except subprocess.CalledProcessError:
+        set_progress(task_id, "⚠️ Re-encode failed, using original file")
         audio_to_process = original_fp
 
-    # Resolve background music
+    # Step 2: Resolve music
+    set_progress(task_id, "🎵 Selecting background music...")
     music_path: str | None = None
 
     if mood and os.environ.get("JAMENDO_CLIENT_ID"):
         try:
+            set_progress(task_id, f"🎵 Fetching '{mood}' music from Jamendo...")
             fetched = fetch_music_for_mood(mood=mood, output_dir=str(job_dir))
             music_path = str(fetched)
+            set_progress(task_id, "✅ Background music downloaded")
         except Exception as exc:
-            logger.warning("Dynamic music fetch failed: %s", exc)
+            set_progress(task_id, "⚠️ Music fetch failed, using default track")
 
     if not music_path:
         music_path = os.environ.get(
             "BACKGROUND_MUSIC_PATH",
             str(Path(__file__).resolve().parent / "assets" / "background_music.wav"),
         )
+        set_progress(task_id, "✅ Background music ready")
 
+    # Step 3: Run pipeline
     try:
+        set_progress(task_id, "🎙️ Loading AI speaker diarization model...")
+
+        # Monkey-patch engine steps to emit progress
+        import core_audio_engine.diarize as diarize_mod
+        import core_audio_engine.sfx as sfx_mod
+        import core_audio_engine.mixer as mixer_mod
+
+        original_diarize = diarize_mod.diarize_speakers
+        original_sfx = sfx_mod.apply_sfx
+        original_mix = mixer_mod.mix_with_ducking
+
+        def patched_diarize(*args, **kwargs):
+            set_progress(task_id, "🎙️ Separating speakers — this may take a few minutes...")
+            result = original_diarize(*args, **kwargs)
+            set_progress(task_id, "✅ Speakers separated successfully")
+            return result
+
+        def patched_sfx(*args, **kwargs):
+            set_progress(task_id, "✨ Detecting keywords and adding sound effects...")
+            result = original_sfx(*args, **kwargs)
+            set_progress(task_id, "✅ Sound effects applied")
+            return result
+
+        def patched_mix(*args, **kwargs):
+            set_progress(task_id, "🎚️ Mixing audio tracks with background music...")
+            result = original_mix(*args, **kwargs)
+            set_progress(task_id, "✅ Mixing complete!")
+            return result
+
+        diarize_mod.diarize_speakers = patched_diarize
+        sfx_mod.apply_sfx = patched_sfx
+        mixer_mod.mix_with_ducking = patched_mix
+
         final_path = run_pipeline(
             raw_audio=str(audio_to_process),
             music_path=music_path,
@@ -97,9 +141,16 @@ def process_audio(task_id: str, file_path: str, mood: str = "") -> None:
             output_dir=str(output_dir),
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
+
+        # Restore originals
+        diarize_mod.diarize_speakers = original_diarize
+        sfx_mod.apply_sfx = original_sfx
+        mixer_mod.mix_with_ducking = original_mix
+
+        set_progress(task_id, "🎉 Your radio show is ready!")
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
-        logger.info("Pipeline complete → %s (task %s)", final_path, task_id)
+
     except Exception as exc:
         logger.exception("Pipeline failed for task %s", task_id)
         tasks[task_id]["status"] = "FAILURE"
@@ -141,9 +192,7 @@ async def upload_audio(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}") from exc
 
-    logger.info("Saved upload to %s (%d bytes)", file_path, total_bytes)
-
-    tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None}
+    tasks[task_id] = {"status": "PENDING", "result_file": None, "error": None, "progress": "⏳ Queued, waiting to start..."}
     background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood)
 
     return {"task_id": task_id}
@@ -155,7 +204,11 @@ async def get_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found.")
 
     entry = tasks[task_id]
-    response: dict = {"task_id": task_id, "status": entry["status"]}
+    response: dict = {
+        "task_id": task_id,
+        "status": entry["status"],
+        "progress": entry.get("progress", ""),
+    }
 
     if entry["status"] == "SUCCESS":
         response["result_file"] = entry["result_file"]
