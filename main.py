@@ -173,21 +173,47 @@ async def get_status(task_id: str):
     return response
 
 
+# --- THE NEW COMPRESSION DOWNLOAD ENDPOINT ---
 @app.get("/download/{task_id}")
-async def download_result(task_id: str):
+async def download_result(task_id: str, format: str = "wav"):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
+    
     entry = tasks[task_id]
     if entry["status"] != "SUCCESS":
         raise HTTPException(status_code=400, detail="Task not complete yet.")
+    
     output_path = Path(entry["result_file"])
     if not output_path.is_file():
         raise HTTPException(status_code=404, detail="Output file not found.")
     
+    # Strip messy extensions from the filename for a clean download name
+    safe_filename = entry.get("filename", "Final").replace(".mp4", "").replace(".wav", "").replace(".m4a", "").replace(".mp3", "")
+    
+    # --- IF THE USER WANTS A SMALL MP3 ---
+    if format.lower() == "mp3":
+        mp3_path = output_path.with_suffix(".mp3")
+        
+        # Compress it on the fly if we haven't already!
+        if not mp3_path.exists():
+            logger.info(f"Compressing {task_id} to MP3...")
+            subprocess.run([
+                "ffmpeg", "-i", str(output_path),
+                "-vn", "-ar", "44100", "-ac", "2", "-b:a", "128k",
+                str(mp3_path), "-y"
+            ], check=True)
+            
+        return FileResponse(
+            path=str(mp3_path), 
+            media_type="audio/mpeg", 
+            filename=f"Radio_Show_{safe_filename}.mp3"
+        )
+        
+    # --- IF THE USER WANTS THE HUGE HQ WAV ---
     return FileResponse(
         path=str(output_path), 
         media_type="audio/wav", 
-        filename=f"Radio_Show_{entry.get('filename', 'Final')}.wav"
+        filename=f"Radio_Show_{safe_filename}.wav"
     )
 
 
@@ -223,6 +249,5 @@ async def health_check():
 
 @app.get("/")
 async def root():
-    """Hugging Face pings this exact route to see if the server is awake. 
-    Without this, the Space gets stuck on 'Starting...' forever!"""
+    """Hugging Face pings this exact route to see if the server is awake."""
     return {"message": "Radio Show Editor API is up and running!"}
