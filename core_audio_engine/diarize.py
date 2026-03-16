@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import gc
 from pathlib import Path
 from typing import Optional
 
@@ -49,6 +50,15 @@ def diarize_speakers(
     logger.info("Running diarization on '%s' (expecting %d speakers) …", audio_path, num_speakers)
     result = pipeline(str(audio_path), num_speakers=num_speakers)
 
+    # Force PyTorch to release memory after inference is done
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
+    gc.collect()
+
     # Handle both Annotation and DiarizeOutput (community model)
     if hasattr(result, "speaker_diarization"):
         annotation = result.speaker_diarization
@@ -76,6 +86,7 @@ def diarize_speakers(
     )
     top_two = ranked[:2]
 
+    # Load the master audio file
     full_audio = AudioSegment.from_wav(str(audio_path))
     results: list[Path] = []
 
@@ -83,18 +94,36 @@ def diarize_speakers(
         tag = "A" if idx == 0 else "B"
         segments = speaker_segments[speaker_label]
 
-        canvas = AudioSegment.silent(duration=len(full_audio), frame_rate=full_audio.frame_rate)
+        logger.info(f"Building track for host_{tag} linearly (Memory Safe Mode)...")
+        
+        # Build an array of chunks instead of overlaying on a massive canvas
+        track_chunks = []
+        last_end_ms = 0
 
         for seg_start, seg_end in segments:
             start_ms = int(seg_start * 1000)
             end_ms = int(seg_end * 1000)
+            
             if (end_ms - start_ms) < min_segment_ms:
                 continue
-            segment_audio = full_audio[start_ms:end_ms]
-            canvas = canvas.overlay(segment_audio, position=start_ms)
+                
+            # Fill the gap with silence
+            if start_ms > last_end_ms:
+                track_chunks.append(AudioSegment.silent(duration=start_ms - last_end_ms, frame_rate=full_audio.frame_rate))
+                
+            # Add the actual speech
+            track_chunks.append(full_audio[start_ms:end_ms])
+            last_end_ms = end_ms
 
+        # Pad the very end with silence if needed
+        if last_end_ms < len(full_audio):
+            track_chunks.append(AudioSegment.silent(duration=len(full_audio) - last_end_ms, frame_rate=full_audio.frame_rate))
+
+        # Sum all chunks efficiently at the very end
         out_file = output_dir / f"host_{tag}.wav"
-        canvas.export(str(out_file), format="wav")
+        final_track = sum(track_chunks, AudioSegment.empty())
+        final_track.export(str(out_file), format="wav")
+
         logger.info(
             "Exported host_%s (%s): %.1f s of speech → %s",
             tag,
@@ -103,6 +132,15 @@ def diarize_speakers(
             out_file,
         )
         results.append(out_file.resolve())
+
+        # The Ninja Assassin: Aggressively wipe this host's data from RAM
+        del track_chunks
+        del final_track
+        gc.collect()
+
+    # Final cleanup of the massive original file
+    del full_audio
+    gc.collect()
 
     return results[0], results[1]
 
@@ -125,4 +163,3 @@ if __name__ == "__main__":
         hf_token=args.token,
         num_speakers=args.num_speakers,
     )
-    print(f"Done → {a}, {b}")
