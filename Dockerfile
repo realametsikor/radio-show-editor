@@ -44,15 +44,12 @@ RUN useradd -m -u 1000 user && \
 USER user
 
 # ── Health check ────────────────────────────────────────────────────────────
-# Uses the dynamic port so the health check doesn't fail on Railway
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
+    CMD curl -f http://localhost:7860/health || exit 1
 
-# ── Dynamic Port Configuration ──────────────────────────────────────────────
-# We set a default of 8000 for local testing, but Railway will override this.
-ENV PORT=8000
-EXPOSE $PORT
+# ── Hugging Face Port Configuration ─────────────────────────────────────────
+ENV PORT=7860
+EXPOSE 7860
 
 # ── Start Uvicorn ──────────────────────────────────────────────────────────
-# This command dynamically binds to whatever port Railway assigns!
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port 7860"]
