@@ -5,6 +5,7 @@ import os
 import uuid
 import json
 import time
+import random
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+# Set up basic logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 TASKS_FILE = Path("tasks_db.json")
@@ -26,18 +29,22 @@ def load_tasks() -> dict:
             return {}
     return {}
 
+tasks: dict[str, dict] = load_tasks()
+
 def save_tasks():
     try:
         TASKS_FILE.write_text(json.dumps(tasks))
     except Exception as e:
         logger.error(f"Failed to save tasks: {e}")
 
-tasks: dict[str, dict] = load_tasks()
-
 app = FastAPI(title="Radio Show Editor API")
 
+# --- CORS Configuration ---
 _raw_origins = os.environ.get("ALLOWED_ORIGINS", "https://radio-show-editor.vercel.app")
 _origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+# Keep localhost for local testing just in case
+if "http://localhost:3000" not in _origins:
+    _origins.append("http://localhost:3000")
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,9 +56,9 @@ app.add_middleware(
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+MAX_UPLOAD_BYTES = 500 * 1024 * 1024  # 500 MB limit
 
-
+# --- Background Processing Task ---
 def process_audio(task_id: str, file_path: str) -> None:
     try:
         tasks[task_id]["status"] = "PROCESSING"
@@ -88,14 +95,14 @@ def process_audio(task_id: str, file_path: str) -> None:
             "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
             "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3"
         ]
-        import random
+        
         chosen_url = random.choice(reliable_music_links)
         
         music_data = requests.get(chosen_url, timeout=15).content
         with open(music_path, "wb") as f:
             f.write(music_data)
 
-        # Notice we are passing 'clean_audio_path' now, NOT 'fp'
+        # Notice we are passing 'clean_audio_path' to prevent AI crashes
         final_path = run_pipeline(
             raw_audio=str(clean_audio_path),
             music_path=music_path,
@@ -107,6 +114,7 @@ def process_audio(task_id: str, file_path: str) -> None:
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(final_path)
         save_tasks()
+        logger.info(f"Task {task_id} completed successfully!")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
@@ -115,10 +123,12 @@ def process_audio(task_id: str, file_path: str) -> None:
         save_tasks()
 
 
+# --- API Endpoints ---
 @app.post("/upload")
 async def upload_audio(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    if file.content_type and not file.content_type.startswith("audio/"):
-        raise HTTPException(status_code=400, detail="Expected an audio file.")
+    # Accept both audio files and video files (like .mp4)
+    if file.content_type and not file.content_type.startswith(("audio/", "video/")):
+        raise HTTPException(status_code=400, detail="Expected an audio or video file.")
 
     task_id = uuid.uuid4().hex
     job_dir = UPLOAD_DIR / task_id
@@ -180,6 +190,7 @@ async def download_result(task_id: str):
         filename=f"Radio_Show_{entry.get('filename', 'Final')}.wav"
     )
 
+
 @app.get("/recent")
 async def get_recent_shows():
     successful_shows = []
@@ -196,16 +207,22 @@ async def get_recent_shows():
             
     return {"recent_shows": successful_shows}
 
+
 # --- THE SECRET DEBUG WINDOW ---
 @app.get("/debug")
 async def debug_database():
     """Shows the raw data so we can see the hidden Python errors."""
     return tasks
 
+
+# --- THE HUGGING FACE HEALTH CHECKS ---
 @app.get("/health")
 async def health_check():
+    """A secondary health check just in case."""
     return {"status": "ok"}
 
 @app.get("/")
 async def root():
-    return {"message": "Radio Show Backend is running!"}
+    """Hugging Face pings this exact route to see if the server is awake. 
+    Without this, the Space gets stuck on 'Starting...' forever!"""
+    return {"message": "Radio Show Editor API is up and running!"}
