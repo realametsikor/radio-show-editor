@@ -43,9 +43,13 @@ RUN useradd -m -u 1000 user && \
 
 USER user
 
-# ── Health check ────────────────────────────────────────────────────────────
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD curl -f http://localhost:7860/health || exit 1
+
+# ── Create uploads directory & non-root user ────────────────────────────────
+RUN useradd -m -u 1000 user && \
+    mkdir -p /app/uploads && \
+    chown -R user:user /app
+
+USER user
 
 # ── Hugging Face Port Configuration ─────────────────────────────────────────
 ENV PORT=7860
