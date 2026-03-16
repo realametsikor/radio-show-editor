@@ -1,7 +1,7 @@
 # =============================================================================
 # Dockerfile — Radio Show Editor Backend 
 # =============================================================================
-# Optimized for dynamic cloud deployment (Railway, RunPod, etc.)
+# Optimized for Hugging Face Spaces
 # =============================================================================
 
 FROM python:3.11-slim
@@ -35,14 +35,6 @@ COPY core_audio_engine/ ./core_audio_engine/
 
 # Copy assets if they exist (background music, SFX files, etc.)
 COPY assets/ ./assets/
-
-# ── Create uploads directory & non-root user ────────────────────────────────
-RUN useradd -m -u 1000 user && \
-    mkdir -p /app/uploads && \
-    chown -R user:user /app
-
-USER user
-
 
 # ── Create uploads directory & non-root user ────────────────────────────────
 RUN useradd -m -u 1000 user && \
