@@ -11,8 +11,8 @@ import {
   Cpu,
 } from "lucide-react";
 
-// Pointing directly to your live backend!
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://radio-show-editor-production.up.railway.app";
+// Pointing directly to your live Hugging Face backend!
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://realametsikor-radio-show-backend.hf.space";
 
 interface ProcessingStatusProps {
   taskId: string;
