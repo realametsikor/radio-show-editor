@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 
 // Pointing directly to your live backend!
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://realametsikor-radio-show-backend.hf.space";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://radio-show-editor-production.up.railway.app";
 
 interface ProcessingStatusProps {
   taskId: string;
