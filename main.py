@@ -59,7 +59,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  
 
 # =========================================================================
-# 🎵 THE MASTER MUSIC LIBRARY 
+# 🎵 THE BULLETPROOF SOUNDHELIX LIBRARY 
 # =========================================================================
 
 SH_GENRES = ["Electronic","Lo-Fi","Jazz","Cinematic","Ambient","Funk","Electronic","Dramatic","Chill","Electronic","Atmospheric","Funk","Minimal","Tense","Upbeat","Electronic","Ambient"]
@@ -68,141 +68,43 @@ SH_MOODS = ["Energetic","Relaxed","Groovy","Mysterious","Dreamy","Groovy","Happy
 ALL_TRACKS = []
 for i in range(17):
     ALL_TRACKS.append({
-        "genre": SH_GENRES[i], "mood": SH_MOODS[i], 
+        "genre": SH_GENRES[i], 
+        "mood": SH_MOODS[i], 
         "url": f"https://www.soundhelix.com/examples/mp3/SoundHelix-Song-{i+1}.mp3"
     })
 
-ADDITIONAL_TRACKS = [
-    {"genre":"Corporate", "mood":"Uplifting", "url":"https://assets.mixkit.co/music/preview/mixkit-inspiring-life-210.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://assets.mixkit.co/music/preview/mixkit-tech-house-vibes-130.mp3"},
-    {"genre":"Hip-Hop", "mood":"Groovy", "url":"https://assets.mixkit.co/music/preview/mixkit-hip-hop-02-738.mp3"},
-    {"genre":"Ambient", "mood":"Dreamy", "url":"https://assets.mixkit.co/music/preview/mixkit-dreamy-traveler-189.mp3"},
-    {"genre":"Pop", "mood":"Happy", "url":"https://assets.mixkit.co/music/preview/mixkit-happy-clapping-432.mp3"},
-    {"genre":"Acoustic", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-relaxing-in-nature-522.mp3"},
-    {"genre":"Cinematic", "mood":"Dramatic", "url":"https://assets.mixkit.co/music/preview/mixkit-cinematic-mystery-drums-and-bass-8.mp3"},
-    {"genre":"Funk", "mood":"Groovy", "url":"https://assets.mixkit.co/music/preview/mixkit-urban-funk-247.mp3"},
-    {"genre":"Chill", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-chilling-on-the-beach-609.mp3"},
-    {"genre":"Classical", "mood":"Romantic", "url":"https://assets.mixkit.co/music/preview/mixkit-soft-piano-ballad-493.mp3"},
-    {"genre":"Corporate", "mood":"Uplifting", "url":"https://assets.mixkit.co/music/preview/mixkit-positive-morning-420.mp3"},
-    {"genre":"Lo-Fi", "mood":"Focused", "url":"https://assets.mixkit.co/music/preview/mixkit-life-is-a-dream-837.mp3"},
-    {"genre":"Ambient", "mood":"Mysterious", "url":"https://assets.mixkit.co/music/preview/mixkit-mystery-ambience-519.mp3"},
-    {"genre":"Cinematic", "mood":"Dramatic", "url":"https://assets.mixkit.co/music/preview/mixkit-epic-cinematic-opener-8.mp3"},
-    {"genre":"Acoustic", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-sleepy-cat-135.mp3"},
-    {"genre":"Pop", "mood":"Energetic", "url":"https://assets.mixkit.co/music/preview/mixkit-dance-with-me-3.mp3"},
-    {"genre":"Hip-Hop", "mood":"Tense", "url":"https://assets.mixkit.co/music/preview/mixkit-trap-beat-loop-4.mp3"},
-    {"genre":"Jazz", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-morning-coffee-jazz-and-bossa-nova-274.mp3"},
-    {"genre":"Funk", "mood":"Groovy", "url":"https://assets.mixkit.co/music/preview/mixkit-funky-groove-321.mp3"},
-    {"genre":"Ambient", "mood":"Dreamy", "url":"https://assets.mixkit.co/music/preview/mixkit-serene-view-443.mp3"},
-    {"genre":"Corporate", "mood":"Uplifting", "url":"https://assets.mixkit.co/music/preview/mixkit-corporate-motivation-471.mp3"},
-    {"genre":"Acoustic", "mood":"Romantic", "url":"https://assets.mixkit.co/music/preview/mixkit-acoustic-guitar-loop-2.mp3"},
-    {"genre":"Electronic", "mood":"Mysterious", "url":"https://assets.mixkit.co/music/preview/mixkit-night-city-vibes-3.mp3"},
-    {"genre":"Jazz", "mood":"Groovy", "url":"https://assets.mixkit.co/music/preview/mixkit-jazzy-abstract-loop-3.mp3"},
-    {"genre":"Classical", "mood":"Melancholic", "url":"https://assets.mixkit.co/music/preview/mixkit-piano-reflections-22.mp3"},
-    {"genre":"Hip-Hop", "mood":"Energetic", "url":"https://assets.mixkit.co/music/preview/mixkit-hip-hop-03-738.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://assets.mixkit.co/music/preview/mixkit-ukulele-fun-2.mp3"},
-    {"genre":"Cinematic", "mood":"Dramatic", "url":"https://assets.mixkit.co/music/preview/mixkit-orchestral-mystery-545.mp3"},
-    {"genre":"Corporate", "mood":"Uplifting", "url":"https://assets.mixkit.co/music/preview/mixkit-business-motivation-217.mp3"},
-    {"genre":"Electronic", "mood":"Groovy", "url":"https://assets.mixkit.co/music/preview/mixkit-deep-urban-623.mp3"},
-    {"genre":"Ambient", "mood":"Mysterious", "url":"https://assets.mixkit.co/music/preview/mixkit-space-ambience-1.mp3"},
-    {"genre":"Acoustic", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-guitar-and-loop-3.mp3"},
-    {"genre":"Jazz", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-lounge-jazz-217.mp3"},
-    {"genre":"Electronic", "mood":"Dreamy", "url":"https://assets.mixkit.co/music/preview/mixkit-dreamy-synth-568.mp3"},
-    {"genre":"Funk", "mood":"Happy", "url":"https://assets.mixkit.co/music/preview/mixkit-reggae-groove-245.mp3"},
-    {"genre":"Classical", "mood":"Romantic", "url":"https://assets.mixkit.co/music/preview/mixkit-classical-ambience-loop-1.mp3"},
-    {"genre":"Cinematic", "mood":"Mysterious", "url":"https://assets.mixkit.co/music/preview/mixkit-documentary-ambient-23.mp3"},
-    {"genre":"Chill", "mood":"Relaxed", "url":"https://assets.mixkit.co/music/preview/mixkit-sunset-groove-1.mp3"},
-    {"genre":"Corporate", "mood":"Happy", "url":"https://assets.mixkit.co/music/preview/mixkit-upbeat-corporate-458.mp3"},
-    {"genre":"Lo-Fi", "mood":"Focused", "url":"https://assets.mixkit.co/music/preview/mixkit-chillhop-summer-feel-463.mp3"},
-    {"genre":"Pop", "mood":"Uplifting", "url":"https://assets.mixkit.co/music/preview/mixkit-pop-uplifting-244.mp3"},
-    {"genre":"Acoustic", "mood":"Melancholic", "url":"https://assets.mixkit.co/music/preview/mixkit-guitar-meditation-582.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://assets.mixkit.co/music/preview/mixkit-electronic-boost-5.mp3"},
-    {"genre":"Classical", "mood":"Melancholic", "url":"https://www.bensound.com/bensound-music/bensound-memories.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://www.bensound.com/bensound-music/bensound-ukulele.mp3"},
-    {"genre":"Cinematic", "mood":"Dramatic", "url":"https://www.bensound.com/bensound-music/bensound-epic.mp3"},
-    {"genre":"Acoustic", "mood":"Relaxed", "url":"https://www.bensound.com/bensound-music/bensound-acousticbreeze.mp3"},
-    {"genre":"Jazz", "mood":"Groovy", "url":"https://www.bensound.com/bensound-music/bensound-jazzyfrenchy.mp3"},
-    {"genre":"Pop", "mood":"Happy", "url":"https://www.bensound.com/bensound-music/bensound-sunny.mp3"},
-    {"genre":"Electronic", "mood":"Mysterious", "url":"https://www.bensound.com/bensound-music/bensound-scifi.mp3"},
-    {"genre":"Corporate", "mood":"Uplifting", "url":"https://www.bensound.com/bensound-music/bensound-littleidea.mp3"},
-    {"genre":"Classical", "mood":"Romantic", "url":"https://www.bensound.com/bensound-music/bensound-tenderness.mp3"},
-    {"genre":"Chill", "mood":"Dreamy", "url":"https://www.bensound.com/bensound-music/bensound-onceagain.mp3"},
-    {"genre":"Corporate", "mood":"Focused", "url":"https://www.bensound.com/bensound-music/bensound-creativeminds.mp3"},
-    {"genre":"Pop", "mood":"Energetic", "url":"https://www.bensound.com/bensound-music/bensound-dance.mp3"},
-    {"genre":"Ambient", "mood":"Relaxed", "url":"https://www.bensound.com/bensound-music/bensound-relaxing.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://www.bensound.com/bensound-music/bensound-dubstep.mp3"},
-    {"genre":"Cinematic", "mood":"Melancholic", "url":"https://www.bensound.com/bensound-music/bensound-slowmotion.mp3"},
-    {"genre":"Jazz", "mood":"Relaxed", "url":"https://www.bensound.com/bensound-music/bensound-thejazzpiano.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://www.bensound.com/bensound-music/bensound-moose.mp3"},
-    {"genre":"Electronic", "mood":"Mysterious", "url":"https://www.bensound.com/bensound-music/bensound-perception.mp3"},
-    {"genre":"Classical", "mood":"Romantic", "url":"https://www.bensound.com/bensound-music/bensound-love.mp3"},
-    {"genre":"Pop", "mood":"Uplifting", "url":"https://www.bensound.com/bensound-music/bensound-betterdays.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://www.bensound.com/bensound-music/bensound-funnysong.mp3"},
-    {"genre":"Jazz", "mood":"Groovy", "url":"https://www.bensound.com/bensound-music/bensound-hipjazz.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://www.bensound.com/bensound-music/bensound-elevate.mp3"},
-    {"genre":"Cinematic", "mood":"Uplifting", "url":"https://www.bensound.com/bensound-music/bensound-tomorrow.mp3"},
-    {"genre":"Corporate", "mood":"Happy", "url":"https://www.bensound.com/bensound-music/bensound-smile.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://audionautix.com/Music/NightRun.mp3"},
-    {"genre":"Cinematic", "mood":"Tense", "url":"https://audionautix.com/Music/Anticipation.mp3"},
-    {"genre":"Acoustic", "mood":"Relaxed", "url":"https://audionautix.com/Music/Barefoot.mp3"},
-    {"genre":"Pop", "mood":"Happy", "url":"https://audionautix.com/Music/BeachParty.mp3"},
-    {"genre":"Jazz", "mood":"Relaxed", "url":"https://audionautix.com/Music/CafeMusic.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://audionautix.com/Music/CountryFeel.mp3"},
-    {"genre":"Ambient", "mood":"Mysterious", "url":"https://audionautix.com/Music/DarkFog.mp3"},
-    {"genre":"Cinematic", "mood":"Dramatic", "url":"https://audionautix.com/Music/EpicMission.mp3"},
-    {"genre":"Funk", "mood":"Groovy", "url":"https://audionautix.com/Music/FunkyConga.mp3"},
-    {"genre":"Funk", "mood":"Groovy", "url":"https://audionautix.com/Music/GroovyBaby.mp3"},
-    {"genre":"Classical", "mood":"Romantic", "url":"https://audionautix.com/Music/Heavenly.mp3"},
-    {"genre":"Hip-Hop", "mood":"Groovy", "url":"https://audionautix.com/Music/HipHopGroove.mp3"},
-    {"genre":"Ambient", "mood":"Relaxed", "url":"https://audionautix.com/Music/InspirationalMeditation.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://audionautix.com/Music/IslandSong.mp3"},
-    {"genre":"Jazz", "mood":"Groovy", "url":"https://audionautix.com/Music/JazzInParis.mp3"},
-    {"genre":"Hip-Hop", "mood":"Energetic", "url":"https://audionautix.com/Music/KickinItOldSchool.mp3"},
-    {"genre":"Chill", "mood":"Relaxed", "url":"https://audionautix.com/Music/LatinChill.mp3"},
-    {"genre":"Acoustic", "mood":"Happy", "url":"https://audionautix.com/Music/MorningMandolin.mp3"},
-    {"genre":"Ambient", "mood":"Mysterious", "url":"https://audionautix.com/Music/MysteriousAmbiance.mp3"},
-    {"genre":"Lo-Fi", "mood":"Focused", "url":"https://audionautix.com/Music/NightOwl.mp3"},
-    {"genre":"Ambient", "mood":"Dreamy", "url":"https://audionautix.com/Music/OceanBreeze.mp3"},
-    {"genre":"Classical", "mood":"Relaxed", "url":"https://audionautix.com/Music/PianoLounge.mp3"},
-    {"genre":"Electronic", "mood":"Energetic", "url":"https://audionautix.com/Music/RockIntro.mp3"},
-    {"genre":"Chill", "mood":"Relaxed", "url":"https://audionautix.com/Music/SmoothSailing.mp3"},
-    {"genre":"Electronic", "mood":"Mysterious", "url":"https://audionautix.com/Music/Spaceship.mp3"},
-    {"genre":"Pop", "mood":"Happy", "url":"https://audionautix.com/Music/TropicalIntro.mp3"},
-    {"genre":"Jazz", "mood":"Happy", "url":"https://audionautix.com/Music/WalkingDownBroadway.mp3"}
-]
-
-ALL_TRACKS.extend(ADDITIONAL_TRACKS)
-
+# Mapped strictly to the available SoundHelix genres and moods
 VIBE_MAPPER = {
-    "lo-fi": ["Lo-Fi", "Chill", "Focused"],
-    "upbeat": ["Energetic", "Happy", "Pop", "Upbeat"],
+    "lo-fi": ["Lo-Fi", "Chill", "Focused", "Relaxed"],
+    "upbeat": ["Energetic", "Happy", "Upbeat", "Driving"],
     "ambient": ["Ambient", "Atmospheric", "Dreamy"],
     "jazz": ["Jazz", "Groovy"],
-    "cinematic": ["Cinematic", "Epic", "Dramatic"],
-    "acoustic": ["Acoustic", "Relaxed"],
+    "cinematic": ["Cinematic", "Dramatic", "Tense"],
+    "acoustic": ["Relaxed", "Chill", "Minimal"], 
     "electronic": ["Electronic"],
-    "hiphop": ["Hip-Hop", "Groovy", "Trap"],
-    "gospel": ["Uplifting", "Corporate", "Happy"], 
+    "hiphop": ["Groovy", "Funky", "Funk"], 
+    "gospel": ["Uplifting", "Happy"], 
     "afrobeats": ["Groovy", "Energetic", "Funk"],
-    "rnb": ["Groovy", "Romantic", "Chill"],
+    "rnb": ["Groovy", "Chill", "Relaxed"],
     "reggae": ["Funk", "Happy", "Relaxed"],
-    "classical": ["Classical", "Melancholic", "Romantic"],
-    "country": ["Acoustic", "Happy"],
+    "classical": ["Cinematic", "Dramatic", "Minimal"],
+    "country": ["Happy", "Relaxed", "Upbeat"],
     "latin": ["Groovy", "Energetic"],
-    "news": ["Corporate", "Focused"],
-    "morning_drive": ["Energetic", "Upbeat", "Pop"],
-    "comedy": ["Happy", "Funk", "Groovy"],
-    "true_crime": ["Mysterious", "Tense", "Dramatic", "Dark Fog"],
+    "news": ["Focused", "Minimal", "Electronic"],
+    "morning_drive": ["Energetic", "Upbeat", "Driving"],
+    "comedy": ["Happy", "Funk", "Funky"],
+    "true_crime": ["Mysterious", "Tense", "Dramatic"],
     "tech": ["Electronic", "Focused", "Minimal"],
-    "sports": ["Energetic", "Rock"],
+    "sports": ["Energetic", "Driving"],
     "war": ["Dramatic", "Tense", "Cinematic"],
     "documentary": ["Ambient", "Focused", "Mysterious"],
-    "talk_show": ["Jazz", "Corporate", "Groovy"],
-    "business": ["Corporate", "Focused", "Uplifting"],
+    "talk_show": ["Jazz", "Groovy", "Relaxed"],
+    "business": ["Focused", "Uplifting", "Minimal"],
     "spiritual": ["Ambient", "Relaxed", "Dreamy"],
-    "horror": ["Mysterious", "Tense", "Cinematic"],
-    "kids": ["Happy", "Acoustic", "Pop"],
-    "romance": ["Romantic", "Classical", "Acoustic"],
-    "science": ["Electronic", "Ambient", "Focused"]
+    "horror": ["Mysterious", "Tense"],
+    "kids": ["Happy", "Upbeat"],
+    "romance": ["Dreamy", "Chill", "Relaxed"],
+    "science": ["Electronic", "Ambient", "Focused", "Atmospheric"]
 }
 
 # --- Background Processing Task ---
@@ -230,8 +132,8 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
         
-        # --- THE NEW SMART PLAYLIST GENERATOR ---
-        logger.info(f"Building a dynamic playlist from the library for vibe: {mood}")
+        # --- THE SMART SOUNDHELIX PLAYLIST GENERATOR ---
+        logger.info(f"Building a dynamic playlist from SoundHelix for vibe: {mood}")
         music_path = str(fp.parent / "background_music.mp3")
         
         target_tags = VIBE_MAPPER.get(mood, ["Chill", "Ambient", "Lo-Fi"])
@@ -242,24 +144,32 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         ]
         
         if len(matching_tracks) < 3:
-            logger.info("Not enough exact matches found. Supplementing with fallbacks...")
-            matching_tracks.extend([
-                "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
-                "https://assets.mixkit.co/music/preview/mixkit-life-is-a-dream-837.mp3",
-                "https://www.bensound.com/bensound-music/bensound-relaxing.mp3"
-            ])
+            logger.info("Not enough exact matches found. Supplementing with safe fallbacks...")
+            fallback_tracks = [t["url"] for t in ALL_TRACKS]
+            random.shuffle(fallback_tracks)
+            matching_tracks.extend(fallback_tracks[:3])
             
-        random.shuffle(matching_tracks)
-        urls_to_fetch = matching_tracks[:3]
+        # Ensure unique tracks
+        unique_tracks = list(set(matching_tracks))
+        random.shuffle(unique_tracks)
+        urls_to_fetch = unique_tracks[:3]
         
-        # 5. Download and stitch them together WITH CROSSFADES
+        # Download and stitch them together WITH CROSSFADES
         master_playlist = AudioSegment.empty()
+        
+        browser_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "audio/mpeg, audio/mp3, */*"
+        }
         
         for i, url in enumerate(urls_to_fetch):
             try:
                 temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
-                logger.info(f"Downloading track {i+1}...")
-                music_data = requests.get(url, timeout=15).content
+                logger.info(f"Downloading track {i+1} ({url})...")
+                
+                res = requests.get(url, headers=browser_headers, timeout=20)
+                res.raise_for_status() 
+                music_data = res.content
                 
                 with open(temp_mp3, "wb") as f:
                     f.write(music_data)
@@ -269,18 +179,20 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
                 if len(master_playlist) == 0:
                     master_playlist = segment
                 else:
-                    # Smooth 3-second DJ crossfade between tracks!
                     crossfade_time = min(3000, len(master_playlist), len(segment))
                     master_playlist = master_playlist.append(segment, crossfade=crossfade_time)
                     
-                temp_mp3.unlink() # Cleanup
+                temp_mp3.unlink() 
             except Exception as e:
                 logger.warning(f"Failed to fetch track {url}: {e}")
                 
-        # FAILSAFE: If all downloads completely failed, generate a silent track to prevent AI crash
+        # FAILSAFE & LOOPING LOGIC
         if len(master_playlist) == 0:
              logger.warning("All music downloads failed! Creating a silent backing track...")
              master_playlist = AudioSegment.silent(duration=60000)
+        else:
+             logger.info("Looping the playlist so it covers long podcasts...")
+             master_playlist = master_playlist * 4
 
         logger.info("Exporting the final Medley track...")
         master_playlist.export(music_path, format="mp3")
