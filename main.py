@@ -14,7 +14,7 @@ import requests
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydub import AudioSegment
+from pydub import AudioSegment, silence
 import gc
 
 # Set up basic logging
@@ -118,14 +118,10 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
-        # =========================================================================
         # 🎙️ STUDIO REVERB: Removing the "Dry AI" Sound
-        # =========================================================================
         logger.info("Sanitizing and adding Live Studio Reverb to voices...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
-        # A 20ms delay acts as a "slapback" reflection from a studio window.
-        # It's subtle (0.15 volume) so it doesn't sound like a bathroom.
         studio_room_filter = "aecho=1.0:0.15:20:0.1"
         
         subprocess.run([
@@ -134,7 +130,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "-ar", "16000", "-ac", "1", 
             str(clean_audio_path), "-y"
         ], check=True)
-        # =========================================================================
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
@@ -149,15 +144,20 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             if t["genre"] in target_tags or t["mood"] in target_tags
         ]
         
-        if len(matching_tracks) < 3:
-            logger.info("Not enough exact matches found. Supplementing with safe fallbacks...")
-            fallback_tracks = [t["url"] for t in ALL_TRACKS]
-            random.shuffle(fallback_tracks)
-            matching_tracks.extend(fallback_tracks[:3])
+        # 🎭 EMOTION SHIFTING: The Curveball Track
+        contrast_pool = [t["url"] for t in ALL_TRACKS if t["url"] not in matching_tracks]
+        
+        if len(matching_tracks) < 2:
+            matching_tracks.extend(contrast_pool[:2])
             
         unique_tracks = list(set(matching_tracks))
         random.shuffle(unique_tracks)
-        urls_to_fetch = unique_tracks[:3]
+        random.shuffle(contrast_pool)
+        
+        urls_to_fetch = unique_tracks[:2] 
+        if contrast_pool:
+            urls_to_fetch.append(contrast_pool[0]) # Injecting 1 contrasting emotion!
+            logger.info("Added 1 Contrast Track to shift emotion mid-show.")
         
         master_playlist = AudioSegment.empty()
         
@@ -166,7 +166,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "Accept": "audio/mpeg, audio/mp3, */*"
         }
         
-        # DOWNLOAD THE MUSIC MEDLEY
         for i, url in enumerate(urls_to_fetch):
             try:
                 temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
@@ -197,6 +196,29 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         else:
              logger.info("Looping the playlist so it covers long podcasts...")
              master_playlist = master_playlist * 8
+
+        # =========================================================================
+        # ⚡ SMART TOPIC STINGERS (AI Structural Analysis)
+        # =========================================================================
+        logger.info("Scanning AI voices for Topic Shifts (pauses > 1.2s)...")
+        try:
+            voice_segment = AudioSegment.from_file(str(clean_audio_path))
+            
+            # Find silences in the NotebookLM audio longer than 1200ms
+            topic_shifts = silence.detect_silences(voice_segment, min_silence_len=1200, silence_thresh=-35)
+            
+            if len(master_playlist) > 5000 and topic_shifts:
+                logger.info(f"Detected {len(topic_shifts)} topic transitions. Forging custom Radio Stingers...")
+                
+                # Create a "Swoosh / Riser" by taking a 2-second chunk of the music, reversing it, and boosting the volume
+                stinger = master_playlist[3000:5000].reverse().fade_in(200).fade_out(200) + 6 
+                
+                for shift_start, shift_end in topic_shifts:
+                    # Drop the stinger directly into the music track exactly when the hosts pause!
+                    master_playlist = master_playlist.overlay(stinger, position=shift_start)
+        except Exception as e:
+            logger.warning(f"Failed to generate Topic Stingers, skipping: {e}")
+        # =========================================================================
 
         # THE ATMOSPHERE & TEXTURE LAYER 
         ATMOSPHERE_URLS = {
@@ -266,7 +288,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(mastered_output) 
         save_tasks()
-        logger.info(f"Task {task_id} completed successfully with FM Mastering & Textures!")
+        logger.info(f"Task {task_id} completed successfully with Stingers & Emotion Shifts!")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
