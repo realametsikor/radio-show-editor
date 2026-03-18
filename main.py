@@ -108,9 +108,16 @@ VIBE_MAPPER = {
 
 # --- Background Processing Task ---
 def process_audio(task_id: str, file_path: str, mood: str) -> None:
+    
+    # LIVE TIMELINE HELPER
+    def update_progress(msg: str):
+        logger.info(msg)
+        tasks[task_id]["message"] = msg
+        save_tasks()
+
     try:
         tasks[task_id]["status"] = "PROCESSING"
-        save_tasks()
+        update_progress("Initializing audio engine...")
 
         from core_audio_engine.engine import run_pipeline
 
@@ -119,7 +126,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
         # 🎙️ STUDIO REVERB: Removing the "Dry AI" Sound
-        logger.info("Sanitizing and adding Live Studio Reverb to voices...")
+        update_progress("Sanitizing audio and applying Live Studio Reverb...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
         studio_room_filter = "aecho=1.0:0.15:20:0.1"
@@ -130,11 +137,25 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "-ar", "16000", "-ac", "1", 
             str(clean_audio_path), "-y"
         ], check=True)
+
+        # 🎬 PROFESSIONAL BUMPERS (Intro & Outro Trick)
+        update_progress("Adding Cold Open and Outro radio bumpers...")
+        try:
+            voice_segment = AudioSegment.from_file(str(clean_audio_path))
+            intro_pad = AudioSegment.silent(duration=6000)
+            outro_pad = AudioSegment.silent(duration=10000)
+            
+            padded_voice = intro_pad + voice_segment + outro_pad
+            padded_voice.export(str(clean_audio_path), format="wav")
+            voice_segment = padded_voice
+        except Exception as e:
+            logger.warning(f"Failed to add bumpers: {e}")
+            voice_segment = AudioSegment.from_file(str(clean_audio_path))
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
         
-        logger.info(f"Building a dynamic playlist from SoundHelix for vibe: {mood}")
+        update_progress(f"Curating dynamic SoundHelix playlist for vibe: {mood}...")
         music_path = str(fp.parent / "background_music.mp3")
         
         target_tags = VIBE_MAPPER.get(mood, ["Chill", "Ambient", "Lo-Fi"])
@@ -156,8 +177,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         
         urls_to_fetch = unique_tracks[:2] 
         if contrast_pool:
-            urls_to_fetch.append(contrast_pool[0]) # Injecting 1 contrasting emotion!
-            logger.info("Added 1 Contrast Track to shift emotion mid-show.")
+            urls_to_fetch.append(contrast_pool[0]) 
         
         master_playlist = AudioSegment.empty()
         
@@ -166,11 +186,10 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "Accept": "audio/mpeg, audio/mp3, */*"
         }
         
+        update_progress("Downloading tracks and mixing DJ crossfades...")
         for i, url in enumerate(urls_to_fetch):
             try:
                 temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
-                logger.info(f"Downloading track {i+1} ({url})...")
-                
                 res = requests.get(url, headers=browser_headers, timeout=20)
                 res.raise_for_status() 
                 music_data = res.content
@@ -191,34 +210,26 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
                 logger.warning(f"Failed to fetch track {url}: {e}")
                 
         if len(master_playlist) == 0:
-             logger.warning("All music downloads failed! Creating a silent backing track...")
              master_playlist = AudioSegment.silent(duration=60000)
         else:
-             logger.info("Looping the playlist so it covers long podcasts...")
              master_playlist = master_playlist * 8
 
-        # =========================================================================
         # ⚡ SMART TOPIC STINGERS (AI Structural Analysis)
-        # =========================================================================
-        logger.info("Scanning AI voices for Topic Shifts (pauses > 1.2s)...")
+        update_progress("Scanning AI voices to forge custom Topic Stingers...")
         try:
-            voice_segment = AudioSegment.from_file(str(clean_audio_path))
-            
-            # Find silences in the NotebookLM audio longer than 1200ms
             topic_shifts = silence.detect_silences(voice_segment, min_silence_len=1200, silence_thresh=-35)
             
-            if len(master_playlist) > 5000 and topic_shifts:
-                logger.info(f"Detected {len(topic_shifts)} topic transitions. Forging custom Radio Stingers...")
-                
-                # Create a "Swoosh / Riser" by taking a 2-second chunk of the music, reversing it, and boosting the volume
+            valid_shifts = []
+            for start, end in topic_shifts:
+                if start > 6500 and end < (len(voice_segment) - 10500):
+                    valid_shifts.append((start, end))
+            
+            if len(master_playlist) > 5000 and valid_shifts:
                 stinger = master_playlist[3000:5000].reverse().fade_in(200).fade_out(200) + 6 
-                
-                for shift_start, shift_end in topic_shifts:
-                    # Drop the stinger directly into the music track exactly when the hosts pause!
+                for shift_start, shift_end in valid_shifts:
                     master_playlist = master_playlist.overlay(stinger, position=shift_start)
         except Exception as e:
             logger.warning(f"Failed to generate Topic Stingers, skipping: {e}")
-        # =========================================================================
 
         # THE ATMOSPHERE & TEXTURE LAYER 
         ATMOSPHERE_URLS = {
@@ -233,7 +244,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             atmosphere_type = "rain"
 
         if atmosphere_type:
-            logger.info(f"Applying physical texture: {atmosphere_type}...")
+            update_progress(f"Applying physical texture ({atmosphere_type}) layer...")
             try:
                 atmo_url = ATMOSPHERE_URLS[atmosphere_type]
                 atmo_res = requests.get(atmo_url, headers=browser_headers, timeout=15)
@@ -253,12 +264,12 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             except Exception as e:
                 logger.warning(f"Failed to apply atmosphere layer, continuing with clean music: {e}")
 
-        logger.info("Exporting the final Medley track...")
         master_playlist.export(music_path, format="mp3")
         del master_playlist
         gc.collect()
 
         # --- RUN THE AI PIPELINE ---
+        update_progress("Running Claude AI & Pyannote Engine (This takes the longest)...")
         final_path = run_pipeline(
             raw_audio=str(clean_audio_path),
             music_path=music_path,
@@ -268,7 +279,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         )
         
         # --- FM BROADCAST MASTERING CHAIN ---
-        logger.info("Applying FM Broadcast Mastering Chain (Bass, Treble, Comp, Limiter)...")
+        update_progress("Applying Final FM Broadcast Mastering (Optimod EQ)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
         fm_eq_filter = (
@@ -287,13 +298,13 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
 
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(mastered_output) 
-        save_tasks()
-        logger.info(f"Task {task_id} completed successfully with Stingers & Emotion Shifts!")
+        update_progress("Mix complete! Your FM broadcast is ready.")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
         tasks[task_id]["status"] = "FAILURE"
         tasks[task_id]["error"] = str(exc)
+        tasks[task_id]["message"] = f"Error: {str(exc)}"
         save_tasks()
 
 
@@ -326,6 +337,7 @@ async def upload_audio(
     tasks[task_id] = {
         "task_id": task_id,
         "status": "PENDING", 
+        "message": "Upload complete. Entering processing queue...",
         "result_file": None, 
         "error": None,
         "filename": file.filename or "Unknown Podcast",
@@ -341,7 +353,14 @@ async def get_status(task_id: str):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
     entry = tasks[task_id]
-    response = {"task_id": task_id, "status": entry["status"]}
+    
+    # We now pass the live message back to the frontend!
+    response = {
+        "task_id": task_id, 
+        "status": entry["status"],
+        "message": entry.get("message", "Processing...")
+    }
+    
     if entry["status"] == "SUCCESS":
         response["result_file"] = entry["result_file"]
     elif entry["status"] == "FAILURE":
