@@ -157,6 +157,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "Accept": "audio/mpeg, audio/mp3, */*"
         }
         
+        # 1. DOWNLOAD THE MUSIC MEDLEY
         for i, url in enumerate(urls_to_fetch):
             try:
                 temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
@@ -188,6 +189,49 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
              logger.info("Looping the playlist so it covers long podcasts...")
              master_playlist = master_playlist * 8
 
+        # =========================================================================
+        # 🌧️ THE ATMOSPHERE & TEXTURE LAYER 
+        # =========================================================================
+        ATMOSPHERE_URLS = {
+            "vinyl": "https://ia800305.us.archive.org/30/items/vinyl-crackle/vinyl-crackle.mp3",
+            "rain": "https://ia801602.us.archive.org/15/items/rain-noise/rain-noise.mp3"
+        }
+
+        atmosphere_type = None
+        if mood in ["lo-fi", "jazz", "acoustic", "talk_show"]:
+            atmosphere_type = "vinyl"
+        elif mood in ["true_crime", "horror", "documentary", "war", "ambient"]:
+            atmosphere_type = "rain"
+
+        if atmosphere_type:
+            logger.info(f"Applying physical texture: {atmosphere_type}...")
+            try:
+                atmo_url = ATMOSPHERE_URLS[atmosphere_type]
+                atmo_res = requests.get(atmo_url, headers=browser_headers, timeout=15)
+                
+                if atmo_res.status_code == 200:
+                    temp_atmo = fp.parent / "temp_atmo.mp3"
+                    with open(temp_atmo, "wb") as f:
+                        f.write(atmo_res.content)
+                        
+                    atmo_segment = AudioSegment.from_file(str(temp_atmo))
+                    
+                    # Drop the volume way down so it's a subtle background texture (-22 dB)
+                    atmo_segment = atmo_segment - 22 
+                    
+                    # Loop the static/rain to perfectly match our giant 48-minute music track
+                    needed_loops = (len(master_playlist) // len(atmo_segment)) + 1
+                    atmo_segment = atmo_segment * needed_loops
+                    atmo_segment = atmo_segment[:len(master_playlist)] 
+                    
+                    # Merge the crackle directly into the music medley!
+                    master_playlist = master_playlist.overlay(atmo_segment)
+                    
+                    temp_atmo.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to apply atmosphere layer, continuing with clean music: {e}")
+        # =========================================================================
+
         logger.info("Exporting the final Medley track...")
         master_playlist.export(music_path, format="mp3")
         del master_playlist
@@ -202,13 +246,10 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
         
-        # =========================================================================
-        # 🎛️ THE FM RADIO MASTERING CHAIN (OPTIMOD EFFECT)
-        # =========================================================================
+        # --- FM BROADCAST MASTERING CHAIN ---
         logger.info("Applying FM Broadcast Mastering Chain (Bass, Treble, Comp, Limiter)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
-        # This FFmpeg filter string is the secret sauce for that "Morning Radio" sound
         fm_eq_filter = (
             "bass=g=5:f=100:w=0.5,"                 
             "treble=g=4:f=8000:w=0.5,"              
@@ -222,12 +263,11 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "-ar", "44100", "-ac", "2", 
             str(mastered_output), "-y"
         ], check=True)
-        # =========================================================================
 
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(mastered_output) 
         save_tasks()
-        logger.info(f"Task {task_id} completed successfully with FM Mastering!")
+        logger.info(f"Task {task_id} completed successfully with FM Mastering & Textures!")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
