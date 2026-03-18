@@ -120,19 +120,28 @@ def run_pipeline(
                 shutil.copy(str(host_a), str(ha_enh))
                 shutil.copy(str(host_b), str(hb_enh))
 
-    # ── Step 3: Combine speakers ───────────────────────────────────────
-    logger.info("STEP 3/7 — Combining speakers")
+    # ── Step 3: Combine speakers (WITH 3D STEREO PANNING) ──────────────
+    logger.info("STEP 3/7 — Combining speakers (Applying 3D Stereo Panning)")
     combined_path = output_dir / "combined.wav"
     try:
         a = AudioSegment.from_wav(str(ha_enh))
         b = AudioSegment.from_wav(str(hb_enh))
+        
+        # Ensure tracks are stereo so we can pan them
+        if a.channels == 1: a = a.set_channels(2)
+        if b.channels == 1: b = b.set_channels(2)
+
+        # The Magic Trick: Pan Host A 30% Left, Host B 30% Right
+        a = a.pan(-0.30)
+        b = b.pan(0.30)
+
         a = effects.normalize(a) - 3
         b = effects.normalize(b) - 3
         combined = a.overlay(b)
         combined = effects.normalize(combined)
         combined.export(str(combined_path), format="wav")
         logger.info(
-            "✅ Combined: %.1fs dBFS=%.1f",
+            "✅ Combined (Wide Studio Stereo): %.1fs dBFS=%.1f",
             len(combined) / 1000,
             combined.dBFS,
         )
@@ -267,4 +276,3 @@ def run_pipeline(
     except Exception:
         logger.info("🎙️ Done → %s", output_path)
 
-    return output_path.resolve()
