@@ -73,7 +73,6 @@ for i in range(17):
         "url": f"https://www.soundhelix.com/examples/mp3/SoundHelix-Song-{i+1}.mp3"
     })
 
-# Mapped strictly to the available SoundHelix genres and moods
 VIBE_MAPPER = {
     "lo-fi": ["Lo-Fi", "Chill", "Focused", "Relaxed"],
     "upbeat": ["Energetic", "Happy", "Upbeat", "Driving"],
@@ -119,7 +118,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
-        # --- AUDIO SANITIZER ---
         logger.info("Sanitizing and normalizing audio for Pyannote...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
@@ -132,7 +130,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
         
-        # --- THE SMART SOUNDHELIX PLAYLIST GENERATOR ---
         logger.info(f"Building a dynamic playlist from SoundHelix for vibe: {mood}")
         music_path = str(fp.parent / "background_music.mp3")
         
@@ -149,12 +146,10 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             random.shuffle(fallback_tracks)
             matching_tracks.extend(fallback_tracks[:3])
             
-        # Ensure unique tracks
         unique_tracks = list(set(matching_tracks))
         random.shuffle(unique_tracks)
         urls_to_fetch = unique_tracks[:3]
         
-        # Download and stitch them together WITH CROSSFADES
         master_playlist = AudioSegment.empty()
         
         browser_headers = {
@@ -186,20 +181,19 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             except Exception as e:
                 logger.warning(f"Failed to fetch track {url}: {e}")
                 
-        # FAILSAFE & LOOPING LOGIC
         if len(master_playlist) == 0:
              logger.warning("All music downloads failed! Creating a silent backing track...")
              master_playlist = AudioSegment.silent(duration=60000)
         else:
              logger.info("Looping the playlist so it covers long podcasts...")
-             master_playlist = master_playlist * 4
+             master_playlist = master_playlist * 8
 
         logger.info("Exporting the final Medley track...")
         master_playlist.export(music_path, format="mp3")
         del master_playlist
         gc.collect()
 
-        # Run the AI Pipeline
+        # --- RUN THE AI PIPELINE ---
         final_path = run_pipeline(
             raw_audio=str(clean_audio_path),
             music_path=music_path,
@@ -208,10 +202,32 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
         
+        # =========================================================================
+        # 🎛️ THE FM RADIO MASTERING CHAIN (OPTIMOD EFFECT)
+        # =========================================================================
+        logger.info("Applying FM Broadcast Mastering Chain (Bass, Treble, Comp, Limiter)...")
+        mastered_output = fp.parent / "radio_show_mastered.wav"
+        
+        # This FFmpeg filter string is the secret sauce for that "Morning Radio" sound
+        fm_eq_filter = (
+            "bass=g=5:f=100:w=0.5,"                 
+            "treble=g=4:f=8000:w=0.5,"              
+            "acompressor=threshold=-21dB:ratio=4:attack=5:release=50:makeup=5dB," 
+            "alimiter=limit=-1dB"                   
+        )
+        
+        subprocess.run([
+            "ffmpeg", "-i", str(final_path), 
+            "-af", fm_eq_filter, 
+            "-ar", "44100", "-ac", "2", 
+            str(mastered_output), "-y"
+        ], check=True)
+        # =========================================================================
+
         tasks[task_id]["status"] = "SUCCESS"
-        tasks[task_id]["result_file"] = str(final_path)
+        tasks[task_id]["result_file"] = str(mastered_output) 
         save_tasks()
-        logger.info(f"Task {task_id} completed successfully!")
+        logger.info(f"Task {task_id} completed successfully with FM Mastering!")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
