@@ -118,14 +118,23 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
-        logger.info("Sanitizing and normalizing audio for Pyannote...")
+        # =========================================================================
+        # 🎙️ STUDIO REVERB: Removing the "Dry AI" Sound
+        # =========================================================================
+        logger.info("Sanitizing and adding Live Studio Reverb to voices...")
         clean_audio_path = fp.parent / "clean_input.wav"
+        
+        # A 20ms delay acts as a "slapback" reflection from a studio window.
+        # It's subtle (0.15 volume) so it doesn't sound like a bathroom.
+        studio_room_filter = "aecho=1.0:0.15:20:0.1"
         
         subprocess.run([
             "ffmpeg", "-i", str(fp), 
+            "-af", studio_room_filter, 
             "-ar", "16000", "-ac", "1", 
             str(clean_audio_path), "-y"
         ], check=True)
+        # =========================================================================
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
@@ -157,7 +166,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             "Accept": "audio/mpeg, audio/mp3, */*"
         }
         
-        # 1. DOWNLOAD THE MUSIC MEDLEY
+        # DOWNLOAD THE MUSIC MEDLEY
         for i, url in enumerate(urls_to_fetch):
             try:
                 temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
@@ -189,9 +198,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
              logger.info("Looping the playlist so it covers long podcasts...")
              master_playlist = master_playlist * 8
 
-        # =========================================================================
-        # 🌧️ THE ATMOSPHERE & TEXTURE LAYER 
-        # =========================================================================
+        # THE ATMOSPHERE & TEXTURE LAYER 
         ATMOSPHERE_URLS = {
             "vinyl": "https://ia800305.us.archive.org/30/items/vinyl-crackle/vinyl-crackle.mp3",
             "rain": "https://ia801602.us.archive.org/15/items/rain-noise/rain-noise.mp3"
@@ -215,22 +222,14 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
                         f.write(atmo_res.content)
                         
                     atmo_segment = AudioSegment.from_file(str(temp_atmo))
-                    
-                    # Drop the volume way down so it's a subtle background texture (-22 dB)
                     atmo_segment = atmo_segment - 22 
-                    
-                    # Loop the static/rain to perfectly match our giant 48-minute music track
                     needed_loops = (len(master_playlist) // len(atmo_segment)) + 1
                     atmo_segment = atmo_segment * needed_loops
                     atmo_segment = atmo_segment[:len(master_playlist)] 
-                    
-                    # Merge the crackle directly into the music medley!
                     master_playlist = master_playlist.overlay(atmo_segment)
-                    
                     temp_atmo.unlink()
             except Exception as e:
                 logger.warning(f"Failed to apply atmosphere layer, continuing with clean music: {e}")
-        # =========================================================================
 
         logger.info("Exporting the final Medley track...")
         master_playlist.export(music_path, format="mp3")
