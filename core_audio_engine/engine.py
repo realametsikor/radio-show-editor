@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import random
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -89,65 +90,93 @@ def run_pipeline(
         except Exception as exc:
             logger.warning("Whisper pre-warm failed: %s", exc)
 
-    # ── Step 1: Diarize ────────────────────────────────────────────────
-    logger.info("STEP 1/7 — Diarizing speakers")
-    host_a, host_b = diarize_speakers(
+    # ── Step 1: Diarize (DYNAMIC SPEAKER COUNT) ───────────────────────
+    logger.info("STEP 1/7 — Diarizing speakers (Dynamic Count)")
+    diarize_result = diarize_speakers(
         audio_path=raw_audio,
         output_dir=output_dir,
         hf_token=hf_token,
     )
-    logger.info("✅ Diarized: A=%s B=%s", host_a.name, host_b.name)
+    
+    # Safely handle if Pyannote returns 1, 2, or 10 speakers
+    if isinstance(diarize_result, (tuple, list)):
+        raw_speakers = list(diarize_result)
+    else:
+        raw_speakers = [diarize_result]
+        
+    logger.info(f"✅ Diarizer returned {len(raw_speakers)} track(s).")
 
     # ── Step 2: Enhance voices in parallel ────────────────────────────
     logger.info("STEP 2/7 — Enhancing voices")
-    ha_enh = output_dir / "host_A_enhanced.wav"
-    hb_enh = output_dir / "host_B_enhanced.wav"
-
+    enhanced_speakers = []
+    
     if audio_len_s > 1200:
         logger.info("Long file — skipping enhancement")
-        shutil.copy(str(host_a), str(ha_enh))
-        shutil.copy(str(host_b), str(hb_enh))
+        enhanced_speakers = raw_speakers
     else:
-        with ThreadPoolExecutor(max_workers=2) as ex:
-            fa = ex.submit(enhance_voice, host_a, ha_enh)
-            fb = ex.submit(enhance_voice, host_b, hb_enh)
-            try:
-                fa.result(timeout=180)
-                fb.result(timeout=180)
-                logger.info("✅ Both voices enhanced")
-            except Exception as exc:
-                logger.warning("Enhancement failed: %s", exc)
-                shutil.copy(str(host_a), str(ha_enh))
-                shutil.copy(str(host_b), str(hb_enh))
+        with ThreadPoolExecutor(max_workers=max(1, len(raw_speakers))) as ex:
+            futures = []
+            for i, spk_path in enumerate(raw_speakers):
+                enh_path = output_dir / f"host_{i}_enhanced.wav"
+                futures.append((enh_path, ex.submit(enhance_voice, spk_path, enh_path)))
+            
+            for enh_path, f in futures:
+                try:
+                    f.result(timeout=180)
+                    enhanced_speakers.append(enh_path)
+                except Exception as exc:
+                    logger.warning(f"Enhancement failed for {enh_path}: {exc}")
+                    # fallback to raw if enhanced fails
+                    enhanced_speakers.append(raw_speakers[len(enhanced_speakers)])
 
-    # ── Step 3: Combine speakers (WITH 3D STEREO PANNING) ──────────────
-    logger.info("STEP 3/7 — Combining speakers (Applying 3D Stereo Panning)")
+    # ── Step 3: Combine speakers (SMART SPATIAL PANNING) ──────────────
+    logger.info("STEP 3/7 — Combining speakers (Smart Spatial Panning)")
     combined_path = output_dir / "combined.wav"
     try:
-        a = AudioSegment.from_wav(str(ha_enh))
-        b = AudioSegment.from_wav(str(hb_enh))
+        valid_audio_tracks = []
         
-        # Ensure tracks are stereo so we can pan them
-        if a.channels == 1: a = a.set_channels(2)
-        if b.channels == 1: b = b.set_channels(2)
-
-        # The Magic Trick: Pan Host A 30% Left, Host B 30% Right
-        a = a.pan(-0.30)
-        b = b.pan(0.30)
-
-        a = effects.normalize(a) - 3
-        b = effects.normalize(b) - 3
-        combined = a.overlay(b)
+        # Load and filter out empty/silent ghost tracks hallucinated by AI
+        for spk_path in enhanced_speakers:
+            track = AudioSegment.from_wav(str(spk_path))
+            if len(track) > 1000 and track.max_dBFS > -45.0: 
+                if track.channels == 1:
+                    track = track.set_channels(2)
+                valid_audio_tracks.append(track)
+                
+        num_speakers = len(valid_audio_tracks)
+        logger.info(f"✅ Detected {num_speakers} active speaker(s) for final mix.")
+        
+        combined = None
+        
+        for i, track in enumerate(valid_audio_tracks):
+            # Smart Panning Logic
+            if num_speakers == 1:
+                pan_val = 0.0 # Dead center for Solo Host
+            elif num_speakers == 2:
+                pan_val = -0.30 if i == 0 else 0.30 # Wide Studio L/R
+            elif num_speakers == 3:
+                pan_val = [-0.30, 0.0, 0.30][i] # Spread L, C, R
+            else:
+                pan_val = random.choice([-0.25, 0.25, -0.15, 0.15, 0])
+                
+            track = track.pan(pan_val)
+            track = effects.normalize(track) - 3
+            
+            if combined is None:
+                combined = track
+            else:
+                combined = combined.overlay(track)
+                
+        if combined is None:
+            combined = AudioSegment.silent(duration=60000)
+            
         combined = effects.normalize(combined)
         combined.export(str(combined_path), format="wav")
-        logger.info(
-            "✅ Combined (Wide Studio Stereo): %.1fs dBFS=%.1f",
-            len(combined) / 1000,
-            combined.dBFS,
-        )
+        logger.info(f"✅ Combined (Smart Stereo): {len(combined)/1000:.1f}s dBFS={combined.dBFS:.1f}")
+        
     except Exception as exc:
-        logger.warning("Combine failed: %s", exc)
-        shutil.copy(str(ha_enh), str(combined_path))
+        logger.exception("Combine failed: %s", exc)
+        shutil.copy(str(enhanced_speakers[0]), str(combined_path))
 
     # ── Step 4: Natural pauses ─────────────────────────────────────────
     logger.info("STEP 4/7 — Adding natural pauses")
@@ -247,7 +276,7 @@ def run_pipeline(
         gap   = AudioSegment.silent(duration=300)
 
         for seg in [intro, mixed, outro]:
-            pass  # type check
+            pass  
 
         if intro.channels == 1:
             intro = intro.set_channels(2)
