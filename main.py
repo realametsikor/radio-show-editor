@@ -5,17 +5,15 @@ import os
 import uuid
 import json
 import time
-import random
 import subprocess
+import gc
 from pathlib import Path
 
 import aiofiles
-import requests
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydub import AudioSegment, silence
-import gc
 
 # Set up basic logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -58,54 +56,6 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  
 
-# =========================================================================
-# 🎵 THE BULLETPROOF SOUNDHELIX LIBRARY 
-# =========================================================================
-
-SH_GENRES = ["Electronic","Lo-Fi","Jazz","Cinematic","Ambient","Funk","Electronic","Dramatic","Chill","Electronic","Atmospheric","Funk","Minimal","Tense","Upbeat","Electronic","Ambient"]
-SH_MOODS = ["Energetic","Relaxed","Groovy","Mysterious","Dreamy","Groovy","Happy","Dramatic","Chill","Focused","Atmospheric","Funky","Minimal","Tense","Uplifting","Driving","Dreamy"]
-
-ALL_TRACKS = []
-for i in range(17):
-    ALL_TRACKS.append({
-        "genre": SH_GENRES[i], 
-        "mood": SH_MOODS[i], 
-        "url": f"https://www.soundhelix.com/examples/mp3/SoundHelix-Song-{i+1}.mp3"
-    })
-
-VIBE_MAPPER = {
-    "lo-fi": ["Lo-Fi", "Chill", "Focused", "Relaxed"],
-    "upbeat": ["Energetic", "Happy", "Upbeat", "Driving"],
-    "ambient": ["Ambient", "Atmospheric", "Dreamy"],
-    "jazz": ["Jazz", "Groovy"],
-    "cinematic": ["Cinematic", "Dramatic", "Tense"],
-    "acoustic": ["Relaxed", "Chill", "Minimal"], 
-    "electronic": ["Electronic"],
-    "hiphop": ["Groovy", "Funky", "Funk"], 
-    "gospel": ["Uplifting", "Happy"], 
-    "afrobeats": ["Groovy", "Energetic", "Funk"],
-    "rnb": ["Groovy", "Chill", "Relaxed"],
-    "reggae": ["Funk", "Happy", "Relaxed"],
-    "classical": ["Cinematic", "Dramatic", "Minimal"],
-    "country": ["Happy", "Relaxed", "Upbeat"],
-    "latin": ["Groovy", "Energetic"],
-    "news": ["Focused", "Minimal", "Electronic"],
-    "morning_drive": ["Energetic", "Upbeat", "Driving"],
-    "comedy": ["Happy", "Funk", "Funky"],
-    "true_crime": ["Mysterious", "Tense", "Dramatic"],
-    "tech": ["Electronic", "Focused", "Minimal"],
-    "sports": ["Energetic", "Driving"],
-    "war": ["Dramatic", "Tense", "Cinematic"],
-    "documentary": ["Ambient", "Focused", "Mysterious"],
-    "talk_show": ["Jazz", "Groovy", "Relaxed"],
-    "business": ["Focused", "Uplifting", "Minimal"],
-    "spiritual": ["Ambient", "Relaxed", "Dreamy"],
-    "horror": ["Mysterious", "Tense"],
-    "kids": ["Happy", "Upbeat"],
-    "romance": ["Dreamy", "Chill", "Relaxed"],
-    "science": ["Electronic", "Ambient", "Focused", "Atmospheric"]
-}
-
 # --- Background Processing Task ---
 def process_audio(task_id: str, file_path: str, mood: str) -> None:
     
@@ -120,6 +70,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         update_progress("Initializing audio engine...")
 
         from core_audio_engine.engine import run_pipeline
+        from core_audio_engine.music_fetch import build_music_track
 
         fp = Path(file_path)
         if not fp.is_file():
@@ -154,69 +105,16 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
+        music_path = fp.parent / "background_music.mp3"
         
-        update_progress(f"Curating dynamic SoundHelix playlist for vibe: {mood}...")
-        music_path = str(fp.parent / "background_music.mp3")
-        
-        target_tags = VIBE_MAPPER.get(mood, ["Chill", "Ambient", "Lo-Fi"])
-        
-        matching_tracks = [
-            t["url"] for t in ALL_TRACKS 
-            if t["genre"] in target_tags or t["mood"] in target_tags
-        ]
-        
-        # 🎭 EMOTION SHIFTING: The Curveball Track
-        contrast_pool = [t["url"] for t in ALL_TRACKS if t["url"] not in matching_tracks]
-        
-        if len(matching_tracks) < 2:
-            matching_tracks.extend(contrast_pool[:2])
-            
-        unique_tracks = list(set(matching_tracks))
-        random.shuffle(unique_tracks)
-        random.shuffle(contrast_pool)
-        
-        urls_to_fetch = unique_tracks[:2] 
-        if contrast_pool:
-            urls_to_fetch.append(contrast_pool[0]) 
-        
-        master_playlist = AudioSegment.empty()
-        
-        browser_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "audio/mpeg, audio/mp3, */*"
-        }
-        
-        update_progress("Downloading tracks and mixing DJ crossfades...")
-        for i, url in enumerate(urls_to_fetch):
-            try:
-                temp_mp3 = fp.parent / f"temp_music_{i}.mp3"
-                res = requests.get(url, headers=browser_headers, timeout=20)
-                res.raise_for_status() 
-                music_data = res.content
-                
-                with open(temp_mp3, "wb") as f:
-                    f.write(music_data)
-                
-                segment = AudioSegment.from_file(str(temp_mp3))
-                
-                if len(master_playlist) == 0:
-                    master_playlist = segment
-                else:
-                    crossfade_time = min(3000, len(master_playlist), len(segment))
-                    master_playlist = master_playlist.append(segment, crossfade=crossfade_time)
-                    
-                temp_mp3.unlink() 
-            except Exception as e:
-                logger.warning(f"Failed to fetch track {url}: {e}")
-                
-        if len(master_playlist) == 0:
-             master_playlist = AudioSegment.silent(duration=60000)
-        else:
-             master_playlist = master_playlist * 8
+        # 🎵 DELEGATING TO OUR NEW MUSIC SUPERVISOR MODULE
+        update_progress(f"Curating dynamic background playlist for vibe: {mood}...")
+        build_music_track(mood=mood, output_path=str(music_path), work_dir=fp.parent)
 
         # ⚡ SMART TOPIC STINGERS (AI Structural Analysis)
         update_progress("Scanning AI voices to forge custom Topic Stingers...")
         try:
+            master_playlist = AudioSegment.from_file(str(music_path))
             topic_shifts = silence.detect_silences(voice_segment, min_silence_len=1200, silence_thresh=-35)
             
             valid_shifts = []
@@ -228,51 +126,20 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
                 stinger = master_playlist[3000:5000].reverse().fade_in(200).fade_out(200) + 6 
                 for shift_start, shift_end in valid_shifts:
                     master_playlist = master_playlist.overlay(stinger, position=shift_start)
+                
+                # Re-save the music track with the stingers baked in
+                master_playlist.export(str(music_path), format="mp3")
+                
+            del master_playlist
+            gc.collect()
         except Exception as e:
             logger.warning(f"Failed to generate Topic Stingers, skipping: {e}")
-
-        # THE ATMOSPHERE & TEXTURE LAYER 
-        ATMOSPHERE_URLS = {
-            "vinyl": "https://ia800305.us.archive.org/30/items/vinyl-crackle/vinyl-crackle.mp3",
-            "rain": "https://ia801602.us.archive.org/15/items/rain-noise/rain-noise.mp3"
-        }
-
-        atmosphere_type = None
-        if mood in ["lo-fi", "jazz", "acoustic", "talk_show"]:
-            atmosphere_type = "vinyl"
-        elif mood in ["true_crime", "horror", "documentary", "war", "ambient"]:
-            atmosphere_type = "rain"
-
-        if atmosphere_type:
-            update_progress(f"Applying physical texture ({atmosphere_type}) layer...")
-            try:
-                atmo_url = ATMOSPHERE_URLS[atmosphere_type]
-                atmo_res = requests.get(atmo_url, headers=browser_headers, timeout=15)
-                
-                if atmo_res.status_code == 200:
-                    temp_atmo = fp.parent / "temp_atmo.mp3"
-                    with open(temp_atmo, "wb") as f:
-                        f.write(atmo_res.content)
-                        
-                    atmo_segment = AudioSegment.from_file(str(temp_atmo))
-                    atmo_segment = atmo_segment - 22 
-                    needed_loops = (len(master_playlist) // len(atmo_segment)) + 1
-                    atmo_segment = atmo_segment * needed_loops
-                    atmo_segment = atmo_segment[:len(master_playlist)] 
-                    master_playlist = master_playlist.overlay(atmo_segment)
-                    temp_atmo.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to apply atmosphere layer, continuing with clean music: {e}")
-
-        master_playlist.export(music_path, format="mp3")
-        del master_playlist
-        gc.collect()
 
         # --- RUN THE AI PIPELINE ---
         update_progress("Running Claude AI & Pyannote Engine (This takes the longest)...")
         final_path = run_pipeline(
             raw_audio=str(clean_audio_path),
-            music_path=music_path,
+            music_path=str(music_path),
             output_path=str(output_file),
             output_dir=str(output_dir),
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
@@ -354,7 +221,6 @@ async def get_status(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found.")
     entry = tasks[task_id]
     
-    # We now pass the live message back to the frontend!
     response = {
         "task_id": task_id, 
         "status": entry["status"],
