@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import random
+import uuid
 from pathlib import Path
 
 import requests
@@ -170,3 +171,32 @@ def build_music_track(mood: str, output_path: str | Path, work_dir: str | Path) 
     master_playlist.export(str(output_path), format="mp3")
     logger.info("✅ Base music and atmosphere track compiled.")
     return output_path
+
+# =========================================================================
+# 🔙 BACKWARD COMPATIBILITY BRIDGE (For sfx.py)
+# =========================================================================
+def fetch_music_for_mood(mood: str) -> str:
+    """
+    Acts as a bridge for legacy files (like sfx.py) that expect to fetch 
+    a single track rather than building the full medley.
+    """
+    logger.info(f"Bridging legacy music request for mood: {mood}...")
+    
+    target_tags = VIBE_MAPPER.get(mood, ["Chill", "Ambient", "Lo-Fi"])
+    matching_tracks = [t["url"] for t in ALL_TRACKS if t["genre"] in target_tags or t["mood"] in target_tags]
+    
+    if not matching_tracks:
+        matching_tracks = [t["url"] for t in ALL_TRACKS]
+        
+    url = random.choice(matching_tracks)
+    output_path = f"temp_single_bumper_{uuid.uuid4().hex[:6]}.mp3"
+    
+    try:
+        res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        with open(output_path, "wb") as f:
+            f.write(res.content)
+        return output_path
+    except Exception as e:
+        logger.warning(f"Legacy fetch failed, generating silence: {e}")
+        AudioSegment.silent(duration=5000).export(output_path, format="mp3")
+        return output_path
