@@ -1,148 +1,172 @@
+"""music_fetch.py — Dynamic music curation and atmosphere generator."""
 from __future__ import annotations
 
 import logging
-import os
 import random
 from pathlib import Path
-from typing import Optional
 
 import requests
+from pydub import AudioSegment
 
 logger = logging.getLogger(__name__)
 
-MOOD_TAG_MAP: dict[str, list[str]] = {
-    # Music styles
-    "lo-fi":        ["lofi", "chillhop", "chill+study"],
-    "upbeat":       ["upbeat+pop", "happy+energetic", "uplifting"],
-    "ambient":      ["ambient+calm", "atmospheric", "meditation"],
-    "jazz":         ["jazz+smooth", "lounge+jazz", "bossa+nova"],
-    "cinematic":    ["cinematic+epic", "orchestral", "dramatic+film"],
-    "acoustic":     ["acoustic+guitar", "folk+acoustic", "fingerpicking"],
-    "electronic":   ["electronic+modern", "synthwave", "chillwave"],
-    "hiphop":       ["hiphop+instrumental", "trap+beats", "urban+instrumental"],
-    "gospel":       ["gospel+inspirational", "christian+uplifting", "worship+music"],
-    "afrobeats":    ["afrobeats", "african+rhythm", "afropop+instrumental"],
-    "rnb":          ["rnb+soul", "soul+music", "neo+soul"],
-    "reggae":       ["reggae", "dub+reggae", "caribbean+chill"],
-    "classical":    ["classical+orchestra", "piano+classical", "symphony"],
-    "country":      ["country+folk", "americana", "bluegrass"],
-    "latin":        ["latin+jazz", "salsa+instrumental", "bossa+nova"],
-    # Show styles
-    "news":         ["corporate+news", "background+news", "informational"],
-    "morning_drive":["upbeat+pop", "morning+energy", "feel+good"],
-    "comedy":       ["funny+background", "quirky+music", "playful+instrumental"],
-    "true_crime":   ["suspense+dark", "mystery+thriller", "noir+music"],
-    "tech":         ["electronic+modern", "future+bass", "tech+background"],
-    "sports":       ["energetic+sport", "pump+up+music", "action+background"],
-    "war":          ["cinematic+war", "epic+military", "dramatic+orchestra"],
-    "documentary":  ["documentary+background", "ambient+cinematic", "thoughtful"],
-    "talk_show":    ["jazz+lounge", "upbeat+background", "talk+show+music"],
-    "business":     ["corporate+background", "professional+music", "ambient+work"],
-    "spiritual":    ["meditation+music", "spiritual+ambient", "peaceful+music"],
-    "horror":       ["dark+ambient", "horror+background", "suspense+music"],
-    "kids":         ["children+music", "playful+fun", "kids+background"],
-    "romance":      ["romantic+music", "love+songs+instrumental", "soft+piano"],
-    "science":      ["discovery+music", "space+ambient", "science+documentary"],
+# =========================================================================
+# 🎵 THE BULLETPROOF SOUNDHELIX LIBRARY 
+# =========================================================================
+SH_GENRES = ["Electronic","Lo-Fi","Jazz","Cinematic","Ambient","Funk","Electronic","Dramatic","Chill","Electronic","Atmospheric","Funk","Minimal","Tense","Upbeat","Electronic","Ambient"]
+SH_MOODS = ["Energetic","Relaxed","Groovy","Mysterious","Dreamy","Groovy","Happy","Dramatic","Chill","Focused","Atmospheric","Funky","Minimal","Tense","Uplifting","Driving","Dreamy"]
+
+ALL_TRACKS = []
+for i in range(17):
+    ALL_TRACKS.append({
+        "genre": SH_GENRES[i], 
+        "mood": SH_MOODS[i], 
+        "url": f"https://www.soundhelix.com/examples/mp3/SoundHelix-Song-{i+1}.mp3"
+    })
+
+VIBE_MAPPER = {
+    "lo-fi": ["Lo-Fi", "Chill", "Focused", "Relaxed"],
+    "upbeat": ["Energetic", "Happy", "Upbeat", "Driving"],
+    "ambient": ["Ambient", "Atmospheric", "Dreamy"],
+    "jazz": ["Jazz", "Groovy"],
+    "cinematic": ["Cinematic", "Dramatic", "Tense"],
+    "acoustic": ["Relaxed", "Chill", "Minimal"], 
+    "electronic": ["Electronic"],
+    "hiphop": ["Groovy", "Funky", "Funk"], 
+    "gospel": ["Uplifting", "Happy"], 
+    "afrobeats": ["Groovy", "Energetic", "Funk"],
+    "rnb": ["Groovy", "Chill", "Relaxed"],
+    "reggae": ["Funk", "Happy", "Relaxed"],
+    "classical": ["Cinematic", "Dramatic", "Minimal"],
+    "country": ["Happy", "Relaxed", "Upbeat"],
+    "latin": ["Groovy", "Energetic"],
+    "news": ["Focused", "Minimal", "Electronic"],
+    "morning_drive": ["Energetic", "Upbeat", "Driving"],
+    "comedy": ["Happy", "Funk", "Funky"],
+    "true_crime": ["Mysterious", "Tense", "Dramatic"],
+    "tech": ["Electronic", "Focused", "Minimal"],
+    "sports": ["Energetic", "Driving"],
+    "war": ["Dramatic", "Tense", "Cinematic"],
+    "documentary": ["Ambient", "Focused", "Mysterious"],
+    "talk_show": ["Jazz", "Groovy", "Relaxed"],
+    "business": ["Focused", "Uplifting", "Minimal"],
+    "spiritual": ["Ambient", "Relaxed", "Dreamy"],
+    "horror": ["Mysterious", "Tense"],
+    "kids": ["Happy", "Upbeat"],
+    "romance": ["Dreamy", "Chill", "Relaxed"],
+    "science": ["Electronic", "Ambient", "Focused", "Atmospheric"]
 }
 
-JAMENDO_API_URL = "https://api.jamendo.com/v3.0/tracks/"
+ATMOSPHERE_URLS = {
+    "vinyl": "https://ia800305.us.archive.org/30/items/vinyl-crackle/vinyl-crackle.mp3",
+    "rain": "https://ia801602.us.archive.org/15/items/rain-noise/rain-noise.mp3"
+}
 
-
-def fetch_music_for_mood(
-    mood: str,
-    output_dir: str | Path,
-    client_id: Optional[str] = None,
-) -> Path:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    cid = client_id or os.environ.get("JAMENDO_CLIENT_ID", "")
-    if not cid:
-        raise RuntimeError("JAMENDO_CLIENT_ID not set.")
-
-    tag_variants = MOOD_TAG_MAP.get(mood, [mood])
-    results = []
-
-    for tags in tag_variants:
-        logger.info("Searching Jamendo: mood=%s tags='%s'", mood, tags)
-        params = {
-            "client_id": cid,
-            "format": "json",
-            "limit": 10,
-            "tags": tags,
-            "audioformat": "mp32",
-            "order": "popularity_total",
-            "include": "musicinfo",
-            "vocalinstrumental": "instrumental",
-        }
+def build_music_track(mood: str, output_path: str | Path, work_dir: str | Path) -> Path:
+    """
+    Builds the background music medley with Emotion Shifting and Physical Atmosphere.
+    Returns the path to the fully mixed backing track.
+    """
+    logger.info(f"Curating dynamic SoundHelix playlist for vibe: {mood}...")
+    
+    work_dir = Path(work_dir)
+    output_path = Path(output_path)
+    
+    target_tags = VIBE_MAPPER.get(mood, ["Chill", "Ambient", "Lo-Fi"])
+    
+    matching_tracks = [
+        t["url"] for t in ALL_TRACKS 
+        if t["genre"] in target_tags or t["mood"] in target_tags
+    ]
+    
+    # 🎭 EMOTION SHIFTING: The Curveball Track
+    contrast_pool = [t["url"] for t in ALL_TRACKS if t["url"] not in matching_tracks]
+    
+    if len(matching_tracks) < 2:
+        matching_tracks.extend(contrast_pool[:2])
+        
+    unique_tracks = list(set(matching_tracks))
+    random.shuffle(unique_tracks)
+    random.shuffle(contrast_pool)
+    
+    urls_to_fetch = unique_tracks[:2] 
+    if contrast_pool:
+        urls_to_fetch.append(contrast_pool[0]) 
+        logger.info("Added 1 Contrast Track to shift emotion mid-show.")
+        
+    master_playlist = AudioSegment.empty()
+    
+    browser_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "audio/mpeg, audio/mp3, */*"
+    }
+    
+    # 1. FETCH AND CROSSFADE MUSIC
+    for i, url in enumerate(urls_to_fetch):
         try:
-            resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-            if results:
-                logger.info("Found %d tracks for tags '%s'", len(results), tags)
-                break
-        except requests.RequestException as exc:
-            logger.warning("Jamendo failed for '%s': %s", tags, exc)
-            continue
+            temp_mp3 = work_dir / f"temp_music_{i}.mp3"
+            logger.info(f"Downloading track {i+1}...")
+            
+            res = requests.get(url, headers=browser_headers, timeout=20)
+            res.raise_for_status() 
+            
+            with open(temp_mp3, "wb") as f:
+                f.write(res.content)
+            
+            segment = AudioSegment.from_file(str(temp_mp3))
+            
+            if len(master_playlist) == 0:
+                master_playlist = segment
+            else:
+                crossfade_time = min(3000, len(master_playlist), len(segment))
+                master_playlist = master_playlist.append(segment, crossfade=crossfade_time)
+                
+            temp_mp3.unlink() 
+        except Exception as e:
+            logger.warning(f"Failed to fetch track {url}: {e}")
+            
+    if len(master_playlist) == 0:
+         logger.warning("All music downloads failed! Creating a silent backing track...")
+         master_playlist = AudioSegment.silent(duration=60000)
+    else:
+         logger.info("Looping the playlist so it covers long podcasts...")
+         master_playlist = master_playlist * 8  # Loop for ~48 mins
 
-    # Retry without instrumental filter
-    if not results:
-        logger.info("Retrying without instrumental filter...")
+    # 2. FETCH AND OVERLAY ATMOSPHERE
+    atmosphere_type = None
+    if mood in ["lo-fi", "jazz", "acoustic", "talk_show"]:
+        atmosphere_type = "vinyl"
+    elif mood in ["true_crime", "horror", "documentary", "war", "ambient"]:
+        atmosphere_type = "rain"
+
+    if atmosphere_type:
+        logger.info(f"Applying physical texture ({atmosphere_type}) layer...")
         try:
-            params = {
-                "client_id": cid,
-                "format": "json",
-                "limit": 10,
-                "tags": tag_variants[0],
-                "audioformat": "mp32",
-                "order": "popularity_total",
-            }
-            resp = requests.get(JAMENDO_API_URL, params=params, timeout=15)
-            resp.raise_for_status()
-            results = resp.json().get("results", [])
-        except Exception as exc:
-            raise RuntimeError(f"Jamendo API failed: {exc}") from exc
+            atmo_url = ATMOSPHERE_URLS[atmosphere_type]
+            atmo_res = requests.get(atmo_url, headers=browser_headers, timeout=15)
+            
+            if atmo_res.status_code == 200:
+                temp_atmo = work_dir / "temp_atmo.mp3"
+                with open(temp_atmo, "wb") as f:
+                    f.write(atmo_res.content)
+                    
+                atmo_segment = AudioSegment.from_file(str(temp_atmo))
+                
+                # Drop volume so it hugs the bottom floor (-22dB)
+                atmo_segment = atmo_segment - 22 
+                
+                # Loop the static/rain to perfectly match our giant music track
+                needed_loops = (len(master_playlist) // len(atmo_segment)) + 1
+                atmo_segment = atmo_segment * needed_loops
+                atmo_segment = atmo_segment[:len(master_playlist)] 
+                
+                # Merge the crackle directly into the music medley
+                master_playlist = master_playlist.overlay(atmo_segment)
+                temp_atmo.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to apply atmosphere layer, continuing with clean music: {e}")
 
-    if not results:
-        raise RuntimeError(f"No music found for mood '{mood}'.")
-
-    # Pick random from top 5 for variety
-    top = results[:5]
-    random.shuffle(top)
-
-    track = None
-    audio_url = None
-    for candidate in top:
-        url = candidate.get("audiodownload") or candidate.get("audio")
-        if url:
-            track = candidate
-            audio_url = url
-            break
-
-    if not track or not audio_url:
-        raise RuntimeError("No downloadable track found.")
-
-    logger.info(
-        "Selected: '%s' by '%s'",
-        track.get("name", "unknown"),
-        track.get("artist_name", "unknown"),
-    )
-
-    output_file = output_dir / f"background_music_{mood}.mp3"
-    try:
-        dl_resp = requests.get(audio_url, timeout=60, stream=True)
-        dl_resp.raise_for_status()
-    except requests.RequestException as exc:
-        raise RuntimeError(f"Download failed: {exc}") from exc
-
-    with open(output_file, "wb") as f:
-        for chunk in dl_resp.iter_content(chunk_size=65536):
-            f.write(chunk)
-
-    logger.info(
-        "Downloaded %.1f MB → %s",
-        output_file.stat().st_size / 1_048_576,
-        output_file,
-    )
-    return output_file.resolve()
+    # 3. EXPORT FINAL BACKING TRACK
+    master_playlist.export(str(output_path), format="mp3")
+    logger.info("✅ Base music and atmosphere track compiled.")
+    return output_path
