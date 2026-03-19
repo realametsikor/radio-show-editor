@@ -305,3 +305,5 @@ def run_pipeline(
     except Exception:
         logger.info("🎙️ Done → %s", output_path)
 
+    # THIS IS THE MISSING MAGIC BULLET!
+    return output_path
