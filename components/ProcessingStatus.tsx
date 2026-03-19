@@ -35,6 +35,8 @@ function formatElapsed(seconds: number): string {
 
 export default function ProcessingStatus({ taskId, onComplete }: ProcessingStatusProps) {
   const [status, setStatus] = useState("PENDING");
+  // NEW: State to hold the live granular message from the Python backend!
+  const [liveMessage, setLiveMessage] = useState("Waiting in queue...");
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -57,19 +59,23 @@ export default function ProcessingStatus({ taskId, onComplete }: ProcessingStatu
     return () => clearInterval(timerInterval);
   }, [taskId]);
 
-  // 2. HONEST POLLING (No fake animations, stubborn network retries)
+  // 2. HONEST POLLING (Pulls the live telemetry message from backend)
   useEffect(() => {
     const poll = async () => {
       try {
         const response = await axios.get(`${API_BASE}/status/${taskId}`);
         const newStatus = response.data.status;
+        
+        // Grab the live message text! (Fallback to default if undefined)
+        const currentMessage = response.data.message || "Server is actively processing...";
 
         setStatus(newStatus);
+        setLiveMessage(currentMessage);
 
         if (newStatus === "SUCCESS") {
           if (intervalRef.current) clearInterval(intervalRef.current);
-          localStorage.removeItem(`timer_start_${taskId}`); // Cleanup timer
-          onComplete(); // Instantly push to the Audio Player
+          localStorage.removeItem(`timer_start_${taskId}`); 
+          onComplete(); 
         } else if (newStatus === "FAILURE") {
           if (intervalRef.current) clearInterval(intervalRef.current);
           localStorage.removeItem(`timer_start_${taskId}`);
@@ -77,8 +83,6 @@ export default function ProcessingStatus({ taskId, onComplete }: ProcessingStatu
         }
       } catch (err) {
         console.warn("Network blip while polling. Will retry...", err);
-        // We purposely DO NOT clear the interval here. 
-        // If the user's Wi-Fi drops temporarily, we just wait for the next tick!
       }
     };
 
@@ -114,14 +118,15 @@ export default function ProcessingStatus({ taskId, onComplete }: ProcessingStatu
           </div>
         </div>
 
-        {/* Live progress message */}
+        {/* ======================================================= */}
+        {/* NEW: Live Telemetry Display */}
+        {/* ======================================================= */}
         {!error && (
-          <div className="mb-6 flex items-center gap-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 px-4 py-3">
+          <div className="mb-6 flex items-center gap-3 rounded-xl bg-indigo-500/10 border border-indigo-500/20 px-4 py-3 shadow-[0_0_15px_rgba(99,102,241,0.1)]">
             <Loader2 className={`h-5 w-5 flex-shrink-0 text-indigo-400 ${status !== "SUCCESS" ? "animate-spin" : ""}`} />
-            <p className="text-sm font-medium text-indigo-300">
-              {status === "PENDING" ? "Waiting in queue..." : 
-               status === "PROCESSING" ? "Server is actively processing..." : 
-               "Finalizing mix..."}
+            <p className="text-sm font-medium text-indigo-200 leading-snug tracking-wide">
+              {/* Render the dynamic string directly from the backend */}
+              {liveMessage} 
             </p>
           </div>
         )}
