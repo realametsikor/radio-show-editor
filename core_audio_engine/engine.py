@@ -52,7 +52,7 @@ def run_pipeline(
     from core_audio_engine.diarize  import diarize_speakers
     from core_audio_engine.enhance  import enhance_voice, master_audio
     from core_audio_engine.producer import analyze_with_claude
-    from core_audio_engine.sfx      import apply_sfx, generate_intro, generate_outro
+    from core_audio_engine.sfx      import apply_sfx
     from core_audio_engine.mixer    import mix_with_ducking, add_natural_pauses
 
     raw_audio   = Path(raw_audio)
@@ -98,7 +98,6 @@ def run_pipeline(
         hf_token=hf_token,
     )
     
-    # Safely handle if Pyannote returns 1, 2, or 10 speakers
     if isinstance(diarize_result, (tuple, list)):
         raw_speakers = list(diarize_result)
     else:
@@ -126,7 +125,6 @@ def run_pipeline(
                     enhanced_speakers.append(enh_path)
                 except Exception as exc:
                     logger.warning(f"Enhancement failed for {enh_path}: {exc}")
-                    # fallback to raw if enhanced fails
                     enhanced_speakers.append(raw_speakers[len(enhanced_speakers)])
 
     # ── Step 3: Combine speakers (SMART SPATIAL PANNING) ──────────────
@@ -135,11 +133,9 @@ def run_pipeline(
     try:
         valid_audio_tracks = []
         
-        # Load and filter out empty/silent ghost tracks hallucinated by AI
         for spk_path in enhanced_speakers:
             try:
                 track = AudioSegment.from_wav(str(spk_path))
-                # RELAXED STRICTNESS: Accept tracks down to -75dB (whisper quiet) and 100ms
                 if len(track) > 100 and track.max_dBFS > -75.0: 
                     if track.channels == 1:
                         track = track.set_channels(2)
@@ -147,18 +143,13 @@ def run_pipeline(
             except Exception:
                 pass
                 
-        # =========================================================================
         # THE ULTIMATE INDESTRUCTIBLE FAILSAFE
-        # =========================================================================
-        # If Pyannote crashed because of the intro silence padding, or if the 
-        # ghost filter deleted everything, this guarantees your voices are saved.
         if len(valid_audio_tracks) == 0:
             logger.warning("Failsafe triggered! Engine lost the voices. Restoring original audio.")
             fallback = AudioSegment.from_wav(str(raw_audio))
             if fallback.channels == 1: 
                 fallback = fallback.set_channels(2)
             valid_audio_tracks.append(fallback)
-        # =========================================================================
         
         num_speakers = len(valid_audio_tracks)
         logger.info(f"✅ Detected {num_speakers} active speaker(s) for final mix.")
@@ -166,13 +157,12 @@ def run_pipeline(
         combined = None
         
         for i, track in enumerate(valid_audio_tracks):
-            # Smart Panning Logic
             if num_speakers == 1:
-                pan_val = 0.0 # Dead center for Solo Host
+                pan_val = 0.0 
             elif num_speakers == 2:
-                pan_val = -0.30 if i == 0 else 0.30 # Wide Studio L/R
+                pan_val = -0.30 if i == 0 else 0.30 
             elif num_speakers == 3:
-                pan_val = [-0.30, 0.0, 0.30][i] # Spread L, C, R
+                pan_val = [-0.30, 0.0, 0.30][i] 
             else:
                 pan_val = random.choice([-0.25, 0.25, -0.15, 0.15, 0])
                 
@@ -283,33 +273,11 @@ def run_pipeline(
     )
     logger.info("✅ Mix complete")
 
-    # ── Step 8: Intro + Outro + Master ────────────────────────────────
-    logger.info("STEP 8 — Intro, outro, mastering")
-    pre_master = output_dir / "pre_master.wav"
-    try:
-        mixed = AudioSegment.from_wav(str(mixed_path))
-        intro = generate_intro(duration_ms=3000, mood=mood)
-        outro = generate_outro(duration_ms=2500, mood=mood)
-        gap   = AudioSegment.silent(duration=300)
-
-        for seg in [intro, mixed, outro]:
-            pass  
-
-        if intro.channels == 1:
-            intro = intro.set_channels(2)
-        if mixed.channels == 1:
-            mixed = mixed.set_channels(2)
-        if outro.channels == 1:
-            outro = outro.set_channels(2)
-
-        full = intro + gap + mixed + gap + outro
-        full.export(str(pre_master), format="wav")
-        logger.info("✅ Full show: %.1f mins", len(full) / 60000)
-    except Exception as exc:
-        logger.warning("Intro/outro failed: %s", exc)
-        shutil.copy(str(mixed_path), str(pre_master))
-
-    master_audio(pre_master, output_path)
+    # ── Step 8: Finalizing Mix ────────────────────────────────────────
+    # Removed the legacy generate_intro/generate_outro calls to prevent 
+    # clashing with the cinematic Sidechain Swell generated in main.py.
+    logger.info("STEP 8/8 — Final safety limiter")
+    master_audio(mixed_path, output_path)
 
     try:
         final = AudioSegment.from_wav(str(output_path))
