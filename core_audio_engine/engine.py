@@ -67,18 +67,16 @@ def run_pipeline(
         audio_len_s = 120
     logger.info("Audio: %.0fs (%.1f mins)", audio_len_s, audio_len_s / 60)
 
-    # Whisper model selection — skip for very long files
-    if audio_len_s > 1800:       # 30+ mins
+    if audio_len_s > 1800:       
         whisper_size = None
         logger.info("Long audio — skipping transcription to save time")
-    elif audio_len_s > 600:      # 10-30 mins
+    elif audio_len_s > 600:      
         whisper_size = "tiny"
-    elif audio_len_s > 180:      # 3-10 mins
+    elif audio_len_s > 180:      
         whisper_size = "base"
     else:
         whisper_size = "small"
 
-    # Pre-warm models
     if hf_token:
         try:
             _get_pipeline(hf_token)
@@ -90,7 +88,7 @@ def run_pipeline(
         except Exception as exc:
             logger.warning("Whisper pre-warm failed: %s", exc)
 
-    # ── Step 1: Diarize (DYNAMIC SPEAKER COUNT) ───────────────────────
+    # ── Step 1: Diarize ───────────────────────────────────────────────
     logger.info("STEP 1/7 — Diarizing speakers (Dynamic Count)")
     diarize_result = diarize_speakers(
         audio_path=raw_audio,
@@ -105,7 +103,7 @@ def run_pipeline(
         
     logger.info(f"✅ Diarizer returned {len(raw_speakers)} track(s).")
 
-    # ── Step 2: Enhance voices in parallel ────────────────────────────
+    # ── Step 2: Enhance voices ────────────────────────────────────────
     logger.info("STEP 2/7 — Enhancing voices")
     enhanced_speakers = []
     
@@ -127,7 +125,7 @@ def run_pipeline(
                     logger.warning(f"Enhancement failed for {enh_path}: {exc}")
                     enhanced_speakers.append(raw_speakers[len(enhanced_speakers)])
 
-    # ── Step 3: Combine speakers (SMART SPATIAL PANNING) ──────────────
+    # ── Step 3: Combine speakers ──────────────────────────────────────
     logger.info("STEP 3/7 — Combining speakers (Smart Spatial Panning)")
     combined_path = output_dir / "combined.wav"
     try:
@@ -143,7 +141,6 @@ def run_pipeline(
             except Exception:
                 pass
                 
-        # THE ULTIMATE INDESTRUCTIBLE FAILSAFE
         if len(valid_audio_tracks) == 0:
             logger.warning("Failsafe triggered! Engine lost the voices. Restoring original audio.")
             fallback = AudioSegment.from_wav(str(raw_audio))
@@ -185,7 +182,7 @@ def run_pipeline(
         logger.exception("Combine failed: %s", exc)
         shutil.copy(str(raw_audio), str(combined_path))
 
-    # ── Step 4: Natural pauses ─────────────────────────────────────────
+    # ── Step 4: Natural pauses ────────────────────────────────────────
     logger.info("STEP 4/7 — Adding natural pauses")
     paused_path = output_dir / "combined_paused.wav"
     try:
@@ -198,7 +195,7 @@ def run_pipeline(
         logger.warning("Pause injection failed: %s", exc)
         voice_source = combined_path
 
-    # ── Step 5: Transcribe + Claude production ─────────────────────────
+    # ── Step 5: Transcribe + Claude production ────────────────────────
     logger.info("STEP 5/7 — Claude AI analysis")
     words      = []
     transcript = ""
@@ -241,11 +238,6 @@ def run_pipeline(
         ],
         mood=mood,
     )
-    logger.info(
-        "✅ Plan: '%s' — %d SFX",
-        production_plan.get("show_title", ""),
-        len(production_plan.get("sfx_cues", [])),
-    )
 
     # ── Step 6: Apply SFX ─────────────────────────────────────────────
     logger.info("STEP 6/7 — Applying SFX")
@@ -257,14 +249,28 @@ def run_pipeline(
             sfx_cues=production_plan.get("sfx_cues", []),
         )
         voice_to_mix = sfx_path
-        logger.info("✅ SFX applied")
     except Exception as exc:
         logger.warning("SFX failed: %s", exc)
         voice_to_mix = voice_source
 
-    # ── Step 7: Mix with music ─────────────────────────────────────────
+    # ── Step 7: Mix with music ────────────────────────────────────────
     logger.info("STEP 7/7 — Professional mixing")
     mixed_path = output_dir / "mixed.wav"
+    
+    # 🎬 ADDING THE BUMPERS HERE (Safe from Pyannote timeline corruption)
+    try:
+        final_voice = AudioSegment.from_wav(str(voice_to_mix))
+        intro_pad = AudioSegment.silent(duration=6000)
+        outro_pad = AudioSegment.silent(duration=10000)
+        
+        padded_voice = intro_pad + final_voice + outro_pad
+        padded_voice_path = output_dir / "padded_voice_for_mix.wav"
+        padded_voice.export(str(padded_voice_path), format="wav")
+        voice_to_mix = padded_voice_path
+        logger.info("✅ Safely applied 6s Intro & 10s Outro padding for the music sidechain.")
+    except Exception as e:
+        logger.warning(f"Failed to pad final voice: {e}")
+
     mix_with_ducking(
         voice_path=voice_to_mix,
         music_path=music_path,
@@ -274,8 +280,6 @@ def run_pipeline(
     logger.info("✅ Mix complete")
 
     # ── Step 8: Finalizing Mix ────────────────────────────────────────
-    # Removed the legacy generate_intro/generate_outro calls to prevent 
-    # clashing with the cinematic Sidechain Swell generated in main.py.
     logger.info("STEP 8/8 — Final safety limiter")
     master_audio(mixed_path, output_path)
 
