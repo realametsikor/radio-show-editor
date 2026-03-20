@@ -59,7 +59,6 @@ MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 # --- Background Processing Task ---
 def process_audio(task_id: str, file_path: str, mood: str) -> None:
     
-    # LIVE TIMELINE HELPER
     def update_progress(msg: str):
         logger.info(msg)
         tasks[task_id]["message"] = msg
@@ -76,42 +75,39 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
-        # 🎙️ STUDIO REVERB: Removing the "Dry AI" Sound
-        update_progress("Sanitizing audio and applying Live Studio Reverb...")
+        # =====================================================================
+        # 🎙️ BULLETPROOF AUDIO SANITIZATION & BUMPERS
+        # =====================================================================
+        update_progress("Sanitizing audio and preparing tracks...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
-        studio_room_filter = "aecho=1.0:0.15:20:0.1"
-        
-        subprocess.run([
-            "ffmpeg", "-i", str(fp), 
-            "-af", studio_room_filter, 
-            "-ar", "16000", "-ac", "1", 
-            str(clean_audio_path), "-y"
-        ], check=True)
-
-        # 🎬 PROFESSIONAL BUMPERS (Intro & Outro Trick)
-        update_progress("Adding Cold Open and Outro radio bumpers...")
         try:
-            voice_segment = AudioSegment.from_file(str(clean_audio_path))
+            # Safely load the raw upload using PyDub (eliminates FFmpeg corruption)
+            voice_segment = AudioSegment.from_file(str(fp))
+            
+            # Normalize and format for Pyannote (16kHz Mono)
+            voice_segment = voice_segment.set_frame_rate(16000).set_channels(1)
+            
+            # Add Cold Open and Outro radio bumpers
             intro_pad = AudioSegment.silent(duration=6000)
             outro_pad = AudioSegment.silent(duration=10000)
             
             padded_voice = intro_pad + voice_segment + outro_pad
             padded_voice.export(str(clean_audio_path), format="wav")
+            
             voice_segment = padded_voice
         except Exception as e:
-            logger.warning(f"Failed to add bumpers: {e}")
-            voice_segment = AudioSegment.from_file(str(clean_audio_path))
+            logger.error(f"Failed to prepare audio: {e}")
+            raise RuntimeError(f"Could not read uploaded audio file: {e}")
+        # =====================================================================
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
         music_path = fp.parent / "background_music.mp3"
         
-        # 🎵 DELEGATING TO OUR NEW MUSIC SUPERVISOR MODULE
         update_progress(f"Curating dynamic background playlist for vibe: {mood}...")
         build_music_track(mood=mood, output_path=str(music_path), work_dir=fp.parent)
 
-        # ⚡ SMART TOPIC STINGERS (AI Structural Analysis)
         update_progress("Scanning AI voices to forge custom Topic Stingers...")
         try:
             master_playlist = AudioSegment.from_file(str(music_path))
@@ -127,7 +123,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
                 for shift_start, shift_end in valid_shifts:
                     master_playlist = master_playlist.overlay(stinger, position=shift_start)
                 
-                # Re-save the music track with the stingers baked in
                 master_playlist.export(str(music_path), format="mp3")
                 
             del master_playlist
@@ -135,7 +130,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         except Exception as e:
             logger.warning(f"Failed to generate Topic Stingers, skipping: {e}")
 
-        # --- RUN THE AI PIPELINE ---
         update_progress("Running Claude AI & Pyannote Engine (This takes the longest)...")
         final_path = run_pipeline(
             raw_audio=str(clean_audio_path),
@@ -145,7 +139,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
         )
         
-        # --- FM BROADCAST MASTERING CHAIN ---
         update_progress("Applying Final FM Broadcast Mastering (Optimod EQ)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
@@ -174,8 +167,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         tasks[task_id]["message"] = f"Error: {str(exc)}"
         save_tasks()
 
-
-# --- API Endpoints ---
 @app.post("/upload")
 async def upload_audio(
     background_tasks: BackgroundTasks, 
