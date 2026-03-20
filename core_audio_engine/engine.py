@@ -137,22 +137,29 @@ def run_pipeline(
         
         # Load and filter out empty/silent ghost tracks hallucinated by AI
         for spk_path in enhanced_speakers:
-            track = AudioSegment.from_wav(str(spk_path))
-            # RELAXED STRICTNESS: 500ms length, -65.0 dBFS volume threshold
-            if len(track) > 500 and track.max_dBFS > -65.0: 
-                if track.channels == 1:
-                    track = track.set_channels(2)
-                valid_audio_tracks.append(track)
-                
-        # THE ULTIMATE FAILSAFE
-        if len(valid_audio_tracks) == 0 and enhanced_speakers:
-            logger.warning("Failsafe triggered! Ghost filter deleted all tracks. Restoring raw audio.")
-            for spk_path in enhanced_speakers:
+            try:
                 track = AudioSegment.from_wav(str(spk_path))
-                if track.channels == 1: 
-                    track = track.set_channels(2)
-                valid_audio_tracks.append(track)
+                # RELAXED STRICTNESS: Accept tracks down to -75dB (whisper quiet) and 100ms
+                if len(track) > 100 and track.max_dBFS > -75.0: 
+                    if track.channels == 1:
+                        track = track.set_channels(2)
+                    valid_audio_tracks.append(track)
+            except Exception:
+                pass
                 
+        # =========================================================================
+        # THE ULTIMATE INDESTRUCTIBLE FAILSAFE
+        # =========================================================================
+        # If Pyannote crashed because of the intro silence padding, or if the 
+        # ghost filter deleted everything, this guarantees your voices are saved.
+        if len(valid_audio_tracks) == 0:
+            logger.warning("Failsafe triggered! Engine lost the voices. Restoring original audio.")
+            fallback = AudioSegment.from_wav(str(raw_audio))
+            if fallback.channels == 1: 
+                fallback = fallback.set_channels(2)
+            valid_audio_tracks.append(fallback)
+        # =========================================================================
+        
         num_speakers = len(valid_audio_tracks)
         logger.info(f"✅ Detected {num_speakers} active speaker(s) for final mix.")
         
@@ -186,7 +193,7 @@ def run_pipeline(
         
     except Exception as exc:
         logger.exception("Combine failed: %s", exc)
-        shutil.copy(str(enhanced_speakers[0]), str(combined_path))
+        shutil.copy(str(raw_audio), str(combined_path))
 
     # ── Step 4: Natural pauses ─────────────────────────────────────────
     logger.info("STEP 4/7 — Adding natural pauses")
