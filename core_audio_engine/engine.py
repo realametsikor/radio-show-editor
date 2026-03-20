@@ -138,8 +138,18 @@ def run_pipeline(
         # Load and filter out empty/silent ghost tracks hallucinated by AI
         for spk_path in enhanced_speakers:
             track = AudioSegment.from_wav(str(spk_path))
-            if len(track) > 1000 and track.max_dBFS > -45.0: 
+            # RELAXED STRICTNESS: 500ms length, -65.0 dBFS volume threshold
+            if len(track) > 500 and track.max_dBFS > -65.0: 
                 if track.channels == 1:
+                    track = track.set_channels(2)
+                valid_audio_tracks.append(track)
+                
+        # THE ULTIMATE FAILSAFE
+        if len(valid_audio_tracks) == 0 and enhanced_speakers:
+            logger.warning("Failsafe triggered! Ghost filter deleted all tracks. Restoring raw audio.")
+            for spk_path in enhanced_speakers:
+                track = AudioSegment.from_wav(str(spk_path))
+                if track.channels == 1: 
                     track = track.set_channels(2)
                 valid_audio_tracks.append(track)
                 
@@ -305,5 +315,4 @@ def run_pipeline(
     except Exception:
         logger.info("🎙️ Done → %s", output_path)
 
-    # THIS IS THE MISSING MAGIC BULLET!
     return output_path
