@@ -15,10 +15,8 @@ def add_natural_pauses(voice_audio: AudioSegment) -> AudioSegment:
     Sidechain Compressor time to lock onto the audio.
     """
     logger.info("Padding voice track with natural breath room...")
-    # Add 800ms of pure silence to the beginning and end
     pad = AudioSegment.silent(duration=800)
     return pad + voice_audio + pad
-
 
 def mix_with_ducking(
     voice_path: str | Path, 
@@ -38,23 +36,16 @@ def mix_with_ducking(
     output_path = Path(output_path)
     
     # =========================================================================
-    # 🎛️ THE SIDECHAIN COMPRESSOR MATRIX
+    # 🎛️ THE FIXED SIDECHAIN COMPRESSOR MATRIX
+    # Added [voice]asplit=2 so we can use the voice track to trigger the 
+    # compressor AND mix it into the final output without FFmpeg crashing.
     # =========================================================================
-    # [0:a] is Music (Background)
-    # [1:a] is Voice (Foreground)
-    # 
-    # Settings:
-    # threshold=0.03 (-30dB): The music drops as soon as the voice hits this volume.
-    # ratio=5.0: A heavy, aggressive ducking clamp (standard for radio).
-    # attack=20: 20ms fast dip so the music gets out of the way of the first syllable.
-    # release=1200: 1.2-second slow release so the music "swells" cinematically during pauses.
-    # =========================================================================
-    
     filter_complex = (
         "[0:a]volume=0.85,aformat=sample_rates=44100:channel_layouts=stereo[music];"
         "[1:a]volume=1.20,aformat=sample_rates=44100:channel_layouts=stereo[voice];"
-        "[music][voice]sidechaincompress=threshold=0.03:ratio=5.0:attack=20:release=1200[ducked_music];"
-        "[ducked_music][voice]amix=inputs=2:duration=shortest:weights=1 1[out]"
+        "[voice]asplit=2[voice_ctrl][voice_mix];"
+        "[music][voice_ctrl]sidechaincompress=threshold=0.03:ratio=5.0:attack=20:release=1200[ducked_music];"
+        "[ducked_music][voice_mix]amix=inputs=2:duration=shortest:weights=1 1[out]"
     )
     
     try:
@@ -74,19 +65,13 @@ def mix_with_ducking(
         error_msg = e.stderr.decode() if e.stderr else str(e)
         logger.error(f"FFmpeg ducking failed: {error_msg}")
         
-        # --- BULLETPROOF FAILSAFE ---
-        # If the advanced FFmpeg sidechain fails for any reason, it falls back to 
-        # standard Pydub mixing so the pipeline never crashes.
         logger.info("Falling back to standard Pydub static mix...")
         music = AudioSegment.from_file(str(music_path))
         voice = AudioSegment.from_wav(str(voice_path))
         
-        # Drop the music volume statically by 14 decibels and overlay
         music = music - 14
         mixed = music.overlay(voice)
         
-        # Crop the music to exactly match the length of the talking
         mixed = mixed[:len(voice)]
         mixed.export(str(output_path), format="wav")
         return output_path
-
