@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydub import AudioSegment, silence
 
-# Set up basic logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -56,7 +55,6 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  
 
-# --- Background Processing Task ---
 def process_audio(task_id: str, file_path: str, mood: str) -> None:
     
     def update_progress(msg: str):
@@ -75,31 +73,17 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         if not fp.is_file():
             raise FileNotFoundError(f"Uploaded file not found: {fp}")
 
-        # =====================================================================
-        # 🎙️ BULLETPROOF AUDIO SANITIZATION & BUMPERS
-        # =====================================================================
         update_progress("Sanitizing audio and preparing tracks...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
         try:
-            # Safely load the raw upload using PyDub (eliminates FFmpeg corruption)
+            # Load without padding so Pyannote doesn't get confused!
             voice_segment = AudioSegment.from_file(str(fp))
-            
-            # Normalize and format for Pyannote (16kHz Mono)
             voice_segment = voice_segment.set_frame_rate(16000).set_channels(1)
-            
-            # Add Cold Open and Outro radio bumpers
-            intro_pad = AudioSegment.silent(duration=6000)
-            outro_pad = AudioSegment.silent(duration=10000)
-            
-            padded_voice = intro_pad + voice_segment + outro_pad
-            padded_voice.export(str(clean_audio_path), format="wav")
-            
-            voice_segment = padded_voice
+            voice_segment.export(str(clean_audio_path), format="wav")
         except Exception as e:
             logger.error(f"Failed to prepare audio: {e}")
             raise RuntimeError(f"Could not read uploaded audio file: {e}")
-        # =====================================================================
         
         output_dir = fp.parent / "output"
         output_file = fp.parent / "radio_show_final.wav"
@@ -113,15 +97,11 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             master_playlist = AudioSegment.from_file(str(music_path))
             topic_shifts = silence.detect_silences(voice_segment, min_silence_len=1200, silence_thresh=-35)
             
-            valid_shifts = []
-            for start, end in topic_shifts:
-                if start > 6500 and end < (len(voice_segment) - 10500):
-                    valid_shifts.append((start, end))
-            
-            if len(master_playlist) > 5000 and valid_shifts:
+            if len(master_playlist) > 5000 and topic_shifts:
                 stinger = master_playlist[3000:5000].reverse().fade_in(200).fade_out(200) + 6 
-                for shift_start, shift_end in valid_shifts:
-                    master_playlist = master_playlist.overlay(stinger, position=shift_start)
+                for shift_start, shift_end in topic_shifts:
+                    # Shift stinger forward by 6000ms because we will pad the voice later in engine.py!
+                    master_playlist = master_playlist.overlay(stinger, position=shift_start + 6000)
                 
                 master_playlist.export(str(music_path), format="mp3")
                 
