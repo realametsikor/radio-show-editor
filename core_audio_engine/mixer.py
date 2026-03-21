@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from pydub import AudioSegment
 
@@ -20,66 +21,67 @@ def mix_with_ducking(
     music_curve: list = None
 ) -> Path:
     """
-    The 'NPR Standard' Phase-Aligned Envelope Mixer.
-    Instead of annoying 'pumping' sidechain compression, we use mathematically 
-    perfect volume crossfades. The music drops to a whisper (-26dB) and stays 
-    completely flat while the hosts talk, so it never overpowers them.
+    The 'Subtle Breather' Sidechain Auto-Ducker.
+    Allows the music to dynamically swell during pauses and breaths, 
+    but strictly caps the maximum music volume at 25% so it never overshadows the hosts.
     """
-    logger.info("Executing Broadcast-Grade Phase-Aligned Volume Envelope...")
+    logger.info("Executing Broadcast-Grade FFmpeg Sidechain Ducker (Tuned for subtle breathing)...")
     
     voice_path = Path(voice_path)
     music_path = Path(music_path)
     output_path = Path(output_path)
     
-    voice = AudioSegment.from_wav(str(voice_path))
-    music = AudioSegment.from_file(str(music_path))
+    # 1. First ensure music is looped to be long enough using Pydub
+    voice_seg = AudioSegment.from_wav(str(voice_path))
+    music_seg = AudioSegment.from_file(str(music_path))
     
-    # 1. Loop music to ensure it covers the entire voice track
-    if len(music) < len(voice):
-        loops = (len(voice) // len(music)) + 1
-        music = music * loops
-    music = music[:len(voice)]
+    if len(music_seg) < len(voice_seg):
+        loops = (len(voice_seg) // len(music_seg)) + 1
+        music_seg = music_seg * loops
+        
+    # Add a gentle fade out to the very end of the music tail
+    music_seg = music_seg[:len(voice_seg)].fade_out(3000)
     
-    # 2. Failsafe for very short test clips
-    if len(voice) < 20000:
-        logger.warning("Clip too short for complex envelope. Using static background mix.")
-        mixed = (music - 24).overlay(voice)
-        mixed.export(str(output_path), format="wav")
-        return output_path
+    # Save the looped music to a temp file for FFmpeg
+    temp_music_path = music_path.parent / "temp_music_looped.wav"
+    music_seg.export(str(temp_music_path), format="wav")
 
     # =========================================================================
-    # 🎛️ THE PHASE-PERFECT AUTOMATION ENVELOPE
-    # We extract slices of the EXACT SAME track at different volumes and 
-    # crossfade them together. This guarantees 0 phase-cancellation and 
-    # perfectly smooth volume swells.
+    # 🎛️ THE SUBTLE BREATHING MATRIX
+    # volume=0.25 on the music ensures the highest "swell" is still quiet.
+    # threshold=0.015 and ratio=5.0 pushes the music extremely deep when hosts talk.
+    # release=600 is the magic number for a smooth, natural swell during breaths.
     # =========================================================================
     
-    V = len(voice)
+    filter_complex = (
+        "[0:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.25[music];"
+        "[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.20[voice];"
+        "[voice]asplit=2[voice_sc][voice_mix];"
+        "[music][voice_sc]sidechaincompress=threshold=0.015:ratio=5.0:attack=10:release=600[ducked_music];"
+        "[ducked_music][voice_mix]amerge=inputs=2[merged];"
+        "[merged]pan=stereo|c0<c0+c2|c1<c1+c3[out]"
+    )
     
-    # Intro: Play at -8dB (Present, but not deafening)
-    loud_intro = music[:7000] - 8
-    
-    # Body: Drop to -26dB (Deep in the background, out of the way)
-    quiet_body = music[5000:V-8000] - 26
-    
-    # Outro: Swell back up to -8dB to close the show
-    loud_outro = music[V-10000:] - 8
-    
-    # Assemble with 2-second overlapping crossfades
-    # loud_intro ends at 7s, quiet_body starts at 5s -> crossfade from 5s to 7s
-    part1 = loud_intro.append(quiet_body, crossfade=2000)
-    
-    # part1 ends at V-8s, loud_outro starts at V-10s -> crossfade from V-10s to V-8s
-    final_dynamic_music = part1.append(loud_outro, crossfade=2000)
-    
-    # 3. Fuse the perfectly ducked music bed with the voices
-    logger.info("Fusing whispered music bed with enhanced voices...")
-    
-    # Small master boost to the voices to guarantee they sit on top of the mix
-    voice = voice + 2 
-    
-    mixed = final_dynamic_music.overlay(voice)
-    
-    mixed.export(str(output_path), format="wav")
-    logger.info("✅ Phase-Perfect Mix Complete!")
-    return output_path
+    try:
+        subprocess.run([
+            "ffmpeg", 
+            "-i", str(temp_music_path),
+            "-i", str(voice_path),
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-y", str(output_path)
+        ], check=True, capture_output=True)
+        
+        temp_music_path.unlink(missing_ok=True)
+        logger.info("✅ Subtle Sidechain Mix Complete!")
+        return output_path
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr.decode() if e.stderr else str(e)
+        logger.error(f"FFmpeg ducking failed: {error_msg}")
+        
+        # Failsafe in case of catastrophic FFmpeg failure
+        logger.info("Falling back to static PyDub mix...")
+        mixed = (music_seg - 20).overlay(voice_seg)
+        mixed.export(str(output_path), format="wav")
+        return output_path
