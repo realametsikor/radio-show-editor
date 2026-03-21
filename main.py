@@ -13,7 +13,7 @@ import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydub import AudioSegment, silence
+from pydub import AudioSegment
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -77,7 +77,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         clean_audio_path = fp.parent / "clean_input.wav"
         
         try:
-            # Load without padding so Pyannote doesn't get confused!
+            # Load safely without padding (engine.py handles timeline now)
             voice_segment = AudioSegment.from_file(str(fp))
             voice_segment = voice_segment.set_frame_rate(16000).set_channels(1)
             voice_segment.export(str(clean_audio_path), format="wav")
@@ -89,26 +89,8 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         output_file = fp.parent / "radio_show_final.wav"
         music_path = fp.parent / "background_music.mp3"
         
-        update_progress(f"Curating dynamic background playlist for vibe: {mood}...")
+        update_progress(f"Curating professional background playlist for vibe: {mood}...")
         build_music_track(mood=mood, output_path=str(music_path), work_dir=fp.parent)
-
-        update_progress("Scanning AI voices to forge custom Topic Stingers...")
-        try:
-            master_playlist = AudioSegment.from_file(str(music_path))
-            topic_shifts = silence.detect_silences(voice_segment, min_silence_len=1200, silence_thresh=-35)
-            
-            if len(master_playlist) > 5000 and topic_shifts:
-                stinger = master_playlist[3000:5000].reverse().fade_in(200).fade_out(200) + 6 
-                for shift_start, shift_end in topic_shifts:
-                    # Shift stinger forward by 6000ms because we will pad the voice later in engine.py!
-                    master_playlist = master_playlist.overlay(stinger, position=shift_start + 6000)
-                
-                master_playlist.export(str(music_path), format="mp3")
-                
-            del master_playlist
-            gc.collect()
-        except Exception as e:
-            logger.warning(f"Failed to generate Topic Stingers, skipping: {e}")
 
         update_progress("Running Claude AI & Pyannote Engine (This takes the longest)...")
         final_path = run_pipeline(
@@ -117,28 +99,29 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             output_path=str(output_file),
             output_dir=str(output_dir),
             hf_token=os.environ.get("HF_AUTH_TOKEN"),
+            mood=mood
         )
         
-        update_progress("Applying Final FM Broadcast Mastering (Optimod EQ)...")
+        update_progress("Applying Final Transparent Mastering...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
-        fm_eq_filter = (
-            "bass=g=5:f=100:w=0.5,"                 
-            "treble=g=4:f=8000:w=0.5,"              
-            "acompressor=threshold=-21dB:ratio=4:attack=5:release=50:makeup=5dB," 
-            "alimiter=limit=-1dB"                   
-        )
+        # =====================================================================
+        # 🎛️ TRANSPARENT NPR MASTERING
+        # Removed the heavy FM compressor that was making the background music 
+        # too loud. Now we just apply a clean, transparent safety limiter.
+        # =====================================================================
+        npr_master_filter = "alimiter=limit=-1.0dB"                   
         
         subprocess.run([
             "ffmpeg", "-i", str(final_path), 
-            "-af", fm_eq_filter, 
+            "-af", npr_master_filter, 
             "-ar", "44100", "-ac", "2", 
             str(mastered_output), "-y"
         ], check=True)
 
         tasks[task_id]["status"] = "SUCCESS"
         tasks[task_id]["result_file"] = str(mastered_output) 
-        update_progress("Mix complete! Your FM broadcast is ready.")
+        update_progress("Mix complete! Your professional podcast is ready.")
 
     except Exception as exc:
         logger.exception("Pipeline failed")
