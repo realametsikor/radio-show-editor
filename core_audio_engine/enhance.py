@@ -10,17 +10,23 @@ logger = logging.getLogger(__name__)
 
 def enhance_voice(audio_path: str | Path, output_path: str | Path) -> Path:
     """
-    Applies light, transparent leveling to the speaker's voice track.
-    (NotebookLM audio is already highly processed, so we avoid heavy EQ here).
+    Applies a Premium NPR/BBC Broadcast Vocal Chain.
+    Adds warmth, clarity, and controlled compression to the raw AI voices.
     """
     audio_path = Path(audio_path)
     output_path = Path(output_path)
     
-    logger.info(f"Applying transparent studio leveler to track: {output_path.name}")
+    logger.info(f"Applying Premium Broadcast Vocal Chain to: {output_path.name}")
     
-    # Just a gentle compressor to catch stray peaks. No heavy Bass/Treble boosts.
+    # 1. Highpass (f=80): Cuts out invisible sub-bass rumble
+    # 2. Bass (g=2, f=150): Adds gentle warmth and authority to the voice
+    # 3. Treble (g=1.5, f=6000): Adds a subtle crispness for intelligibility
+    # 4. Compressor: Smooths out loud and quiet words automatically
     eq_filter = (
-        "acompressor=threshold=-15dB:ratio=2:attack=10:release=100:makeup=2dB,"
+        "highpass=f=80,"
+        "bass=g=2:f=150:w=0.5,"
+        "treble=g=1.5:f=6000:w=0.5,"
+        "acompressor=threshold=-16dB:ratio=2.5:attack=10:release=150:makeup=3dB,"
         "aformat=sample_rates=16000"
     )
 
@@ -40,11 +46,12 @@ def enhance_voice(audio_path: str | Path, output_path: str | Path) -> Path:
 
 
 def master_audio(pre_master: str | Path, output_path: str | Path) -> Path:
-    logger.info("Applying final safety limiter to assembled mix...")
+    """Safety limiter for the engine assembly phase."""
+    logger.info("Applying engine safety limiter...")
     pre_master = Path(pre_master)
     output_path = Path(output_path)
     
-    master_filter = "alimiter=limit=-1.5dB:level_in=1:level_out=1"
+    master_filter = "alimiter=limit=-1.0dB:level_in=1:level_out=1"
     
     try:
         subprocess.run([
