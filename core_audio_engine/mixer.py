@@ -20,11 +20,11 @@ def mix_with_ducking(
     music_curve: list = None
 ) -> Path:
     """
-    Pure Volume Automation (No complex mixing or sidechain algorithms).
-    Literally scans the audio for pauses and turns the background music 
-    up or down exactly like a human audio engineer riding a fader.
+    Pure Volume Automation (The 'Goldilocks' Tune).
+    Strikes the perfect balance: the music is highly enjoyable in the background 
+    (-22dB) but gently swells during 0.7s pauses to carry the emotion of the show.
     """
-    logger.info("Executing Pure Volume Automation (Documentary Style)...")
+    logger.info("Executing Pure Volume Automation (The 'Goldilocks' Mix)...")
     
     voice = AudioSegment.from_wav(str(voice_path))
     music = AudioSegment.from_file(str(music_path))
@@ -35,30 +35,29 @@ def mix_with_ducking(
         music = music * loops
     music = music[:len(voice)]
     
-    # 2. Detect literal pauses in the conversation
-    # FIXED TYPO: detect_silence (singular), NOT detect_silences!
-    logger.info("Scanning for pauses and breaths to automate volume...")
-    pauses = silence.detect_silence(voice, min_silence_len=1200, silence_thresh=-45)
+    # 2. Detect thoughtful pauses in the conversation (700ms)
+    logger.info("Scanning for 0.7s pauses to orchestrate the music bed...")
+    pauses = silence.detect_silence(voice, min_silence_len=700, silence_thresh=-35)
     
     # 3. Build the dynamic background track block by block
     final_music = AudioSegment.empty()
     last_end = 0
     
-    # --- DOCUMENTARY VOLUME SETTINGS ---
-    TALKING_DROP = 28  # Drops music 28dB so it is deeply in the background when hosts talk
-    PAUSE_DROP = 14    # Raises music to -14dB during intro, outro, and mid-sentence breaths
-    FADE_MS = 500      # A smooth half-second glide so the volume change doesn't "click" or jerk
+    # --- THE GOLDILOCKS VOLUME SETTINGS ---
+    TALKING_DROP = 22  # The sweet spot. Audible, enjoyable, but clearly in the background.
+    PAUSE_DROP = 12    # Swells up nicely during breaths to maintain energy.
+    FADE_MS = 750      # 0.75-second cinematic crossfade. Super buttery and smooth.
     
     for start, end in pauses:
-        # A. Add the talking section (Turn Volume DOWN)
+        # A. Add the talking section (Turn Volume DOWN to -22dB)
         if start > last_end:
             talking_chunk = music[last_end:start] - TALKING_DROP
             final_music += talking_chunk
             
-        # B. Add the paused section (Turn Volume UP)
+        # B. Add the paused section (Turn Volume UP to -12dB)
         pause_chunk = music[start:end] - PAUSE_DROP
         
-        # Apply smooth glides to the pause chunk so it feels natural
+        # Apply buttery smooth glides to the pause chunk
         fade_in_len = min(FADE_MS, len(pause_chunk) // 2)
         fade_out_len = min(FADE_MS, len(pause_chunk) // 2)
         
@@ -76,10 +75,9 @@ def mix_with_ducking(
     final_music = final_music[:len(voice)]
     
     # 4. Pure Overlay 
-    # Just laying the clean voices straight over the clean music track
-    logger.info("Overlaying pristine voices onto the automated volume track...")
+    logger.info("Fusing the 'Goldilocks' automated music bed with enhanced voices...")
     mixed = final_music.overlay(voice)
     
     mixed.export(str(output_path), format="wav")
-    logger.info("✅ Pure Volume Automation Mix Complete!")
+    logger.info("✅ Perfect Goldilocks Mix Complete!")
     return output_path
