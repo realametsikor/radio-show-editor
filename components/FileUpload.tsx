@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, ChangeEvent } from "react";
-import { UploadCloud, Music, FileAudio, Settings2, Sparkles, Loader2, Mic2 } from "lucide-react";
+import { UploadCloud, Music, FileAudio, Settings2, Sparkles, Loader2, Mic2, X } from "lucide-react";
 
 type FileUploadProps = {
   onUploadComplete: (taskId: string) => void;
@@ -11,7 +11,8 @@ type FileUploadProps = {
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://realametsikor-radio-show-backend.hf.space";
 
 export default function FileUpload({ onUploadComplete }: FileUploadProps) {
-  const [file, setFile] = useState<File | null>(null);
+  // Changed from a single file to an array of files
+  const [files, setFiles] = useState<File[]>([]);
   const [customIntroFile, setCustomIntroFile] = useState<File | null>(null);
   
   const [mood, setMood] = useState("documentary");
@@ -23,8 +24,14 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
   const handleMainFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setFile(e.target.files[0]);
+      // Append the newly selected files to the existing array
+      setFiles((prevFiles) => [...prevFiles, ...Array.from(e.target.files!)]);
     }
+  };
+
+  const handleRemoveFile = (indexToRemove: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevents opening the file browser when clicking the X
+    setFiles((prevFiles) => prevFiles.filter((_, i) => i !== indexToRemove));
   };
 
   const handleCustomIntroChange = (e: ChangeEvent<HTMLInputElement>) => {
@@ -34,11 +41,16 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
   };
 
   const handleUpload = async () => {
-    if (!file) return;
+    if (files.length === 0) return;
 
     setIsUploading(true);
     const formData = new FormData();
-    formData.append("file", file);
+    
+    // Attach every file in the array to the form data
+    files.forEach((file) => {
+      formData.append("files", file);
+    });
+    
     formData.append("mood", mood);
     formData.append("intro_selection", introSelection);
 
@@ -118,7 +130,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         </div>
       </div>
 
-      {/* Conditionally Rendered Custom Intro Upload */}
+      {/* Custom Intro Upload */}
       {introSelection === "custom" && (
         <div className="mb-6 p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex items-center justify-between gap-4 animate-fade-in">
           <div className="flex items-center gap-3 overflow-hidden">
@@ -146,16 +158,17 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         </div>
       )}
 
-      {/* Main Podcast Dropzone */}
+      {/* MULTI-FILE Podcast Dropzone */}
       <div 
         onClick={() => fileInputRef.current?.click()}
         className={`group relative cursor-pointer rounded-3xl border-2 border-dashed transition-all duration-300 ${
-          file ? "border-indigo-500 bg-indigo-500/5" : "border-gray-700 bg-[#13131A] hover:border-indigo-500 hover:bg-gray-800/50"
-        } p-12 text-center`}
+          files.length > 0 ? "border-indigo-500 bg-indigo-500/5" : "border-gray-700 bg-[#13131A] hover:border-indigo-500 hover:bg-gray-800/50"
+        } p-8 sm:p-12 text-center`}
       >
         <input
           type="file"
           accept="audio/*,video/*"
+          multiple // Enables selecting multiple files at once!
           ref={fileInputRef}
           onChange={handleMainFileChange}
           className="hidden"
@@ -163,25 +176,45 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         
         <div className="flex flex-col items-center justify-center">
           <div className={`mb-6 flex h-20 w-20 items-center justify-center rounded-2xl transition-all duration-300 ${
-            file ? "bg-indigo-500/20 ring-4 ring-indigo-500/20" : "bg-gray-800 group-hover:bg-indigo-500/10 group-hover:scale-105"
+            files.length > 0 ? "bg-indigo-500/20 ring-4 ring-indigo-500/20" : "bg-gray-800 group-hover:bg-indigo-500/10 group-hover:scale-105"
           }`}>
-            {file ? <FileAudio className="h-10 w-10 text-indigo-400" /> : <UploadCloud className="h-10 w-10 text-gray-400 group-hover:text-indigo-400" />}
+            {files.length > 0 ? <FileAudio className="h-10 w-10 text-indigo-400" /> : <UploadCloud className="h-10 w-10 text-gray-400 group-hover:text-indigo-400" />}
           </div>
           
-          <h3 className="mb-2 text-xl font-semibold text-white">
-            {file ? "Ready to Process!" : "Upload AI Podcast"}
-          </h3>
-          
-          <p className="text-sm text-gray-400 max-w-sm">
-            {file 
-              ? file.name 
-              : "Click to browse or drag and drop your raw NotebookLM file here."}
-          </p>
+          {files.length > 0 ? (
+            <div className="w-full space-y-3 mt-2">
+              <h3 className="text-xl font-semibold text-white mb-4">
+                {files.length} File{files.length > 1 ? "s" : ""} Ready
+              </h3>
+              <div className="max-h-40 overflow-y-auto space-y-2 pr-2">
+                {files.map((f, index) => (
+                  <div key={index} className="flex items-center justify-between bg-gray-900/80 border border-gray-700 rounded-lg p-3 text-left">
+                    <span className="text-sm text-gray-300 truncate pr-4">{f.name}</span>
+                    <button 
+                      onClick={(e) => handleRemoveFile(index, e)}
+                      className="text-gray-500 hover:text-red-400 hover:bg-red-400/10 p-1.5 rounded-md transition-colors"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs text-indigo-300 pt-2">Click anywhere to add more files.</p>
+            </div>
+          ) : (
+            <>
+              <h3 className="mb-2 text-xl font-semibold text-white">Upload AI Podcast Parts</h3>
+              <p className="text-sm text-gray-400 max-w-sm">
+                Click to browse or drag and drop your raw NotebookLM files here. <br/>
+                <span className="text-indigo-400/80">You can upload multiple files and they will be stitched together automatically!</span>
+              </p>
+            </>
+          )}
         </div>
       </div>
 
       {/* Submit Button */}
-      {file && (
+      {files.length > 0 && (
         <button
           onClick={handleUpload}
           disabled={isUploading || (introSelection === "custom" && !customIntroFile)}
@@ -190,7 +223,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
           {isUploading ? (
             <>
               <Loader2 className="h-5 w-5 animate-spin" />
-              Uploading...
+              Processing Episode...
             </>
           ) : (
             <>
