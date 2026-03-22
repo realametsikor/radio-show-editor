@@ -8,7 +8,9 @@ import time
 import subprocess
 import gc
 import shutil
+import requests
 from pathlib import Path
+from typing import Optional
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -56,8 +58,37 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  
 
-def process_audio(task_id: str, file_path: str, mood: str) -> None:
+# =========================================================================
+# 🎵 INTRO GENERATOR
+# Fetches premium pre-made stingers if the user doesn't upload a custom one.
+# =========================================================================
+def fetch_builtin_intro(selection: str, work_dir: Path) -> Path | None:
+    intro_map = {
+        "documentary": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
+        "energetic": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-5.mp3",
+        "ethereal": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-10.mp3"
+    }
     
+    if selection not in intro_map:
+        return None
+        
+    out_path = work_dir / f"builtin_intro_{selection}.mp3"
+    try:
+        res = requests.get(intro_map[selection], headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+        res.raise_for_status()
+        with open(out_path, "wb") as f:
+            f.write(res.content)
+            
+        # Extract just the first 6 seconds to act as a punchy radio stinger
+        seg = AudioSegment.from_file(str(out_path))
+        seg = seg[:6000].fade_out(1500)
+        seg.export(str(out_path), format="mp3")
+        return out_path
+    except Exception as e:
+        logger.warning(f"Failed to fetch builtin intro: {e}")
+        return None
+
+def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str, custom_intro_path: str | None) -> None:
     def update_progress(msg: str):
         logger.info(msg)
         tasks[task_id]["message"] = msg
@@ -71,9 +102,7 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         from core_audio_engine.music_fetch import build_music_track
 
         fp = Path(file_path)
-        if not fp.is_file():
-            raise FileNotFoundError(f"Uploaded file not found: {fp}")
-
+        
         update_progress("Sanitizing audio and preparing tracks...")
         clean_audio_path = fp.parent / "clean_input.wav"
         
@@ -82,7 +111,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             voice_segment = voice_segment.set_frame_rate(16000).set_channels(1)
             voice_segment.export(str(clean_audio_path), format="wav")
         except Exception as e:
-            logger.error(f"Failed to prepare audio: {e}")
             raise RuntimeError(f"Could not read uploaded audio file: {e}")
         
         output_dir = fp.parent / "output"
@@ -102,14 +130,45 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             mood=mood
         )
         
+        # =====================================================================
+        # 🎬 ATTACH THE INTRO BUMPER
+        # Smoothly crossfades the selected intro into the start of the podcast.
+        # =====================================================================
+        if intro_selection != "none":
+            update_progress("Attaching Custom/Built-in Intro...")
+            try:
+                final_mix = AudioSegment.from_wav(str(final_path))
+                intro_audio = None
+                
+                if intro_selection == "custom" and custom_intro_path and Path(custom_intro_path).exists():
+                    intro_audio = AudioSegment.from_file(custom_intro_path)
+                else:
+                    fetched_path = fetch_builtin_intro(intro_selection, fp.parent)
+                    if fetched_path:
+                        intro_audio = AudioSegment.from_file(str(fetched_path))
+                        
+                if intro_audio:
+                    # Match formatting so PyDub can combine them without crashing
+                    intro_audio = intro_audio.set_frame_rate(final_mix.frame_rate).set_channels(final_mix.channels)
+                    
+                    # 1.5-second cinematic crossfade
+                    crossfade_ms = min(1500, len(intro_audio))
+                    if len(intro_audio) > crossfade_ms:
+                        final_mix = intro_audio.append(final_mix, crossfade=crossfade_ms)
+                    else:
+                        final_mix = intro_audio + final_mix
+                        
+                    final_mix.export(str(final_path), format="wav")
+                    update_progress("✅ Intro successfully attached!")
+            except Exception as e:
+                logger.warning(f"Failed to attach intro, skipping: {e}")
+
         update_progress("Applying Premium Podcast Mastering (Glue & Limiter)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
-        
         premium_master_filter = (
             "acompressor=threshold=-24dB:ratio=1.5:attack=15:release=50:makeup=2dB,"
             "alimiter=limit=-1.0dB"
         )
-        
         subprocess.run([
             "ffmpeg", "-i", str(final_path), 
             "-af", premium_master_filter, 
@@ -132,7 +191,9 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
 async def upload_audio(
     background_tasks: BackgroundTasks, 
     file: UploadFile = File(...),
-    mood: str = Form("lo-fi")
+    mood: str = Form("documentary"),
+    intro_selection: str = Form("none"),
+    custom_intro: Optional[UploadFile] = File(None)
 ):
     if file.content_type and not file.content_type.startswith(("audio/", "video/")):
         raise HTTPException(status_code=400, detail="Expected an audio or video file.")
@@ -142,16 +203,24 @@ async def upload_audio(
     job_dir.mkdir(parents=True, exist_ok=True)
     file_path = job_dir / (file.filename or "upload.wav")
 
-    total_bytes = 0
+    # 1. Save Main Podcast
     try:
         async with aiofiles.open(file_path, "wb") as out:
             while chunk := await file.read(1024 * 1024):
-                total_bytes += len(chunk)
-                if total_bytes > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="File too large.")
                 await out.write(chunk)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to save main file: {exc}")
+
+    # 2. Save Custom Intro (if uploaded)
+    custom_intro_path = None
+    if intro_selection == "custom" and custom_intro is not None:
+        custom_intro_path = job_dir / (custom_intro.filename or "custom_intro.wav")
+        try:
+            async with aiofiles.open(custom_intro_path, "wb") as out:
+                while chunk := await custom_intro.read(1024 * 1024):
+                    await out.write(chunk)
+        except Exception as exc:
+            logger.warning(f"Failed to save custom intro: {exc}")
 
     tasks[task_id] = {
         "task_id": task_id,
@@ -164,7 +233,7 @@ async def upload_audio(
     }
     save_tasks()
     
-    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood)
+    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood, intro_selection, str(custom_intro_path) if custom_intro_path else None)
     return {"task_id": task_id}
 
 @app.get("/status/{task_id}")
@@ -172,13 +241,7 @@ async def get_status(task_id: str):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="Task not found.")
     entry = tasks[task_id]
-    
-    response = {
-        "task_id": task_id, 
-        "status": entry["status"],
-        "message": entry.get("message", "Processing...")
-    }
-    
+    response = {"task_id": task_id, "status": entry["status"], "message": entry.get("message", "Processing...")}
     if entry["status"] == "SUCCESS":
         response["result_file"] = entry["result_file"]
     elif entry["status"] == "FAILURE":
@@ -187,91 +250,32 @@ async def get_status(task_id: str):
 
 @app.get("/download/{task_id}")
 async def download_result(task_id: str, format: str = "wav"):
-    if task_id not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    
-    entry = tasks[task_id]
-    if entry["status"] != "SUCCESS":
-        raise HTTPException(status_code=400, detail="Task not complete yet.")
+    entry = tasks.get(task_id)
+    if not entry or entry["status"] != "SUCCESS":
+        raise HTTPException(status_code=404, detail="Task not found or incomplete.")
     
     output_path = Path(entry["result_file"])
-    if not output_path.is_file():
-        raise HTTPException(status_code=404, detail="Output file not found.")
-    
     safe_filename = entry.get("filename", "Final").replace(".mp4", "").replace(".wav", "").replace(".m4a", "").replace(".mp3", "")
     
     if format.lower() == "mp3":
         mp3_path = output_path.with_suffix(".mp3")
-        
         if not mp3_path.exists():
-            logger.info(f"Compressing {task_id} to MP3...")
-            subprocess.run([
-                "ffmpeg", "-i", str(output_path),
-                "-vn", "-ar", "44100", "-ac", "2", "-b:a", "128k",
-                str(mp3_path), "-y"
-            ], check=True)
-            
-        return FileResponse(
-            path=str(mp3_path), 
-            media_type="audio/mpeg", 
-            filename=f"Radio_Show_{safe_filename}.mp3"
-        )
+            subprocess.run(["ffmpeg", "-i", str(output_path), "-vn", "-ar", "44100", "-ac", "2", "-b:a", "128k", str(mp3_path), "-y"], check=True)
+        return FileResponse(path=str(mp3_path), media_type="audio/mpeg", filename=f"Radio_Show_{safe_filename}.mp3")
         
-    return FileResponse(
-        path=str(output_path), 
-        media_type="audio/wav", 
-        filename=f"Radio_Show_{safe_filename}.wav"
-    )
+    return FileResponse(path=str(output_path), media_type="audio/wav", filename=f"Radio_Show_{safe_filename}.wav")
 
 @app.get("/recent")
 async def get_recent_shows():
-    successful_shows = []
-    sorted_tasks = sorted(tasks.values(), key=lambda x: x.get("timestamp", 0), reverse=True)
-    
-    for t in sorted_tasks:
-        if t["status"] == "SUCCESS":
-            successful_shows.append({
-                "filename": t.get("filename", "Unknown Podcast"),
-                "task_id": t["task_id"],
-                "download_link": f"/download/{t['task_id']}",
-                "time_processed": time.ctime(t.get("timestamp", time.time()))
-            })
-            
+    successful_shows = [{"filename": t.get("filename", "Unknown Podcast"), "task_id": t["task_id"], "download_link": f"/download/{t['task_id']}", "time_processed": time.ctime(t.get("timestamp", time.time()))} for t in sorted(tasks.values(), key=lambda x: x.get("timestamp", 0), reverse=True) if t["status"] == "SUCCESS"]
     return {"recent_shows": successful_shows}
 
-# =========================================================================
-# 🗑️ NEW DELETE ENDPOINT
-# Safely removes the task from the database and deletes the massive audio 
-# files from the Hugging Face server.
-# =========================================================================
 @app.delete("/delete/{task_id}")
 async def delete_task(task_id: str):
-    if task_id not in tasks:
-        raise HTTPException(status_code=404, detail="Task not found.")
-    
-    # 1. Remove from database
-    del tasks[task_id]
-    save_tasks()
-    
-    # 2. Wipe the physical folder to save disk space
+    if task_id in tasks:
+        del tasks[task_id]
+        save_tasks()
     job_dir = UPLOAD_DIR / task_id
     if job_dir.exists():
-        try:
-            shutil.rmtree(job_dir, ignore_errors=True)
-            logger.info(f"Successfully deleted files for task: {task_id}")
-        except Exception as e:
-            logger.error(f"Failed to delete directory for {task_id}: {e}")
-            
-    return {"message": "Show deleted successfully", "task_id": task_id}
-
-@app.get("/debug")
-async def debug_database():
-    return tasks
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok"}
-
-@app.get("/")
-async def root():
-    return {"message": "Radio Show Editor API is up and running!"}
+        shutil.rmtree(job_dir, ignore_errors=True)
+    return {"message": "Show deleted successfully"}
