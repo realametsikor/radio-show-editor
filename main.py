@@ -10,7 +10,7 @@ import gc
 import shutil
 import requests
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import aiofiles
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -151,11 +151,6 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
             except Exception as e:
                 logger.warning(f"Failed to attach intro, skipping: {e}")
 
-        # =====================================================================
-        # 🎛️ TRANSPARENT MASTERING
-        # Removed the 'acompressor' that was sucking the music volume back up!
-        # Now we only apply a clean alimiter to prevent digital clipping.
-        # =====================================================================
         update_progress("Applying Final Transparent Mastering...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
@@ -179,29 +174,51 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
         tasks[task_id]["message"] = f"Error: {str(exc)}"
         save_tasks()
 
+# =========================================================================
+# 🎛️ MULTI-FILE UPLOAD ENDPOINT
+# Accepts an array of files, automatically stitches them together, and saves 
+# them as a single master track for the pipeline.
+# =========================================================================
 @app.post("/upload")
 async def upload_audio(
     background_tasks: BackgroundTasks, 
-    file: UploadFile = File(...),
+    files: List[UploadFile] = File(...),
     mood: str = Form("documentary"),
     intro_selection: str = Form("none"),
     custom_intro: Optional[UploadFile] = File(None)
 ):
-    if file.content_type and not file.content_type.startswith(("audio/", "video/")):
-        raise HTTPException(status_code=400, detail="Expected an audio or video file.")
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded.")
 
     task_id = uuid.uuid4().hex
     job_dir = UPLOAD_DIR / task_id
     job_dir.mkdir(parents=True, exist_ok=True)
-    file_path = job_dir / (file.filename or "upload.wav")
-
+    
+    # 1. Stitch multiple audio files together
+    file_path = job_dir / "upload_combined.wav"
     try:
-        async with aiofiles.open(file_path, "wb") as out:
-            while chunk := await file.read(1024 * 1024):
-                await out.write(chunk)
+        combined_audio = AudioSegment.empty()
+        first_filename = files[0].filename or "Podcast"
+        
+        for f in files:
+            temp_path = job_dir / (f.filename or f"temp_{uuid.uuid4().hex}.wav")
+            async with aiofiles.open(temp_path, "wb") as out:
+                while chunk := await f.read(1024 * 1024):
+                    await out.write(chunk)
+            
+            # Load the chunk and append it
+            seg = AudioSegment.from_file(str(temp_path))
+            combined_audio += seg
+            
+            # Delete the temp part to save space
+            temp_path.unlink(missing_ok=True)
+            
+        # Export the glued-together master file
+        combined_audio.export(str(file_path), format="wav")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save main file: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to combine files: {exc}")
 
+    # 2. Save Custom Intro (if uploaded)
     custom_intro_path = None
     if intro_selection == "custom" and custom_intro is not None:
         custom_intro_path = job_dir / (custom_intro.filename or "custom_intro.wav")
@@ -215,10 +232,10 @@ async def upload_audio(
     tasks[task_id] = {
         "task_id": task_id,
         "status": "PENDING", 
-        "message": "Upload complete. Entering processing queue...",
+        "message": "Upload complete. Stitching audio and entering queue...",
         "result_file": None, 
         "error": None,
-        "filename": file.filename or "Unknown Podcast",
+        "filename": first_filename,
         "timestamp": time.time()
     }
     save_tasks()
