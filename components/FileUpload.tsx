@@ -7,11 +7,10 @@ type FileUploadProps = {
   onUploadComplete: (taskId: string) => void;
 };
 
-// NOTE: Ensure this matches your Hugging Face Backend URL
+// NOTE: Ensure this matches your Hugging Face Backend URL!
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://realametsikor-radio-show-backend.hf.space";
 
 export default function FileUpload({ onUploadComplete }: FileUploadProps) {
-  // Changed from a single file to an array of files
   const [files, setFiles] = useState<File[]>([]);
   const [customIntroFile, setCustomIntroFile] = useState<File | null>(null);
   
@@ -24,13 +23,12 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
 
   const handleMainFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      // Append the newly selected files to the existing array
       setFiles((prevFiles) => [...prevFiles, ...Array.from(e.target.files!)]);
     }
   };
 
   const handleRemoveFile = (indexToRemove: number, e: React.MouseEvent) => {
-    e.stopPropagation(); // Prevents opening the file browser when clicking the X
+    e.stopPropagation();
     setFiles((prevFiles) => prevFiles.filter((_, i) => i !== indexToRemove));
   };
 
@@ -46,7 +44,6 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
     setIsUploading(true);
     const formData = new FormData();
     
-    // Attach every file in the array to the form data
     files.forEach((file) => {
       formData.append("files", file);
     });
@@ -138,7 +135,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
             <div className="truncate">
               <p className="text-sm font-medium text-indigo-200">Custom Intro Audio</p>
               <p className="text-xs text-gray-400 truncate">
-                {customIntroFile ? customIntroFile.name : "Select an MP3 or WAV file"}
+                {customIntroFile ? customIntroFile.name : "Select an MP3, WAV, or M4A file"}
               </p>
             </div>
           </div>
@@ -150,7 +147,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
           </button>
           <input
             type="file"
-            accept="audio/*"
+            accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*"
             ref={customIntroInputRef}
             onChange={handleCustomIntroChange}
             className="hidden"
@@ -158,7 +155,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         </div>
       )}
 
-      {/* MULTI-FILE Podcast Dropzone */}
+      {/* MULTI-FILE Podcast Dropzone (Now unlocked for all media formats) */}
       <div 
         onClick={() => fileInputRef.current?.click()}
         className={`group relative cursor-pointer rounded-3xl border-2 border-dashed transition-all duration-300 ${
@@ -167,8 +164,8 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
       >
         <input
           type="file"
-          accept="audio/*,video/*"
-          multiple // Enables selecting multiple files at once!
+          accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.mp4,.mov,.webm,audio/*,video/*"
+          multiple
           ref={fileInputRef}
           onChange={handleMainFileChange}
           className="hidden"
@@ -205,8 +202,8 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
             <>
               <h3 className="mb-2 text-xl font-semibold text-white">Upload AI Podcast Parts</h3>
               <p className="text-sm text-gray-400 max-w-sm">
-                Click to browse or drag and drop your raw NotebookLM files here. <br/>
-                <span className="text-indigo-400/80">You can upload multiple files and they will be stitched together automatically!</span>
+                Click to browse or drag and drop your raw files here. <br/>
+                <span className="text-indigo-400/80 mt-1 block">Supports .m4a, .mp3, .wav, and multiple files!</span>
               </p>
             </>
           )}
