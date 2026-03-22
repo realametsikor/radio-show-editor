@@ -58,10 +58,6 @@ UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024  
 
-# =========================================================================
-# 🎵 INTRO GENERATOR
-# Fetches premium pre-made stingers if the user doesn't upload a custom one.
-# =========================================================================
 def fetch_builtin_intro(selection: str, work_dir: Path) -> Path | None:
     intro_map = {
         "documentary": "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
@@ -79,7 +75,6 @@ def fetch_builtin_intro(selection: str, work_dir: Path) -> Path | None:
         with open(out_path, "wb") as f:
             f.write(res.content)
             
-        # Extract just the first 6 seconds to act as a punchy radio stinger
         seg = AudioSegment.from_file(str(out_path))
         seg = seg[:6000].fade_out(1500)
         seg.export(str(out_path), format="mp3")
@@ -130,10 +125,6 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
             mood=mood
         )
         
-        # =====================================================================
-        # 🎬 ATTACH THE INTRO BUMPER
-        # Smoothly crossfades the selected intro into the start of the podcast.
-        # =====================================================================
         if intro_selection != "none":
             update_progress("Attaching Custom/Built-in Intro...")
             try:
@@ -148,10 +139,7 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
                         intro_audio = AudioSegment.from_file(str(fetched_path))
                         
                 if intro_audio:
-                    # Match formatting so PyDub can combine them without crashing
                     intro_audio = intro_audio.set_frame_rate(final_mix.frame_rate).set_channels(final_mix.channels)
-                    
-                    # 1.5-second cinematic crossfade
                     crossfade_ms = min(1500, len(intro_audio))
                     if len(intro_audio) > crossfade_ms:
                         final_mix = intro_audio.append(final_mix, crossfade=crossfade_ms)
@@ -163,15 +151,19 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
             except Exception as e:
                 logger.warning(f"Failed to attach intro, skipping: {e}")
 
-        update_progress("Applying Premium Podcast Mastering (Glue & Limiter)...")
+        # =====================================================================
+        # 🎛️ TRANSPARENT MASTERING
+        # Removed the 'acompressor' that was sucking the music volume back up!
+        # Now we only apply a clean alimiter to prevent digital clipping.
+        # =====================================================================
+        update_progress("Applying Final Transparent Mastering...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
-        premium_master_filter = (
-            "acompressor=threshold=-24dB:ratio=1.5:attack=15:release=50:makeup=2dB,"
-            "alimiter=limit=-1.0dB"
-        )
+        
+        transparent_master_filter = "alimiter=limit=-1.0dB"
+        
         subprocess.run([
             "ffmpeg", "-i", str(final_path), 
-            "-af", premium_master_filter, 
+            "-af", transparent_master_filter, 
             "-ar", "44100", "-ac", "2", 
             str(mastered_output), "-y"
         ], check=True)
@@ -203,7 +195,6 @@ async def upload_audio(
     job_dir.mkdir(parents=True, exist_ok=True)
     file_path = job_dir / (file.filename or "upload.wav")
 
-    # 1. Save Main Podcast
     try:
         async with aiofiles.open(file_path, "wb") as out:
             while chunk := await file.read(1024 * 1024):
@@ -211,7 +202,6 @@ async def upload_audio(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to save main file: {exc}")
 
-    # 2. Save Custom Intro (if uploaded)
     custom_intro_path = None
     if intro_selection == "custom" and custom_intro is not None:
         custom_intro_path = job_dir / (custom_intro.filename or "custom_intro.wav")
