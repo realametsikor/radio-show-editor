@@ -36,9 +36,9 @@ def mix_with_ducking(
     music = music[:len(voice)]
     
     # 2. Detect literal pauses in the conversation
-    # Looks for any silence longer than 1.2 seconds (including the Intro & Outro)
+    # FIXED TYPO: detect_silence (singular), NOT detect_silences!
     logger.info("Scanning for pauses and breaths to automate volume...")
-    pauses = silence.detect_silences(voice, min_silence_len=1200, silence_thresh=-45)
+    pauses = silence.detect_silence(voice, min_silence_len=1200, silence_thresh=-45)
     
     # 3. Build the dynamic background track block by block
     final_music = AudioSegment.empty()
