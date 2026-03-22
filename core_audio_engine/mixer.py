@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
-from pydub import AudioSegment
+from pydub import AudioSegment, silence
 
 logger = logging.getLogger(__name__)
 
@@ -21,67 +20,66 @@ def mix_with_ducking(
     music_curve: list = None
 ) -> Path:
     """
-    The 'Subtle Breather' Sidechain Auto-Ducker.
-    Allows the music to dynamically swell during pauses and breaths, 
-    but strictly caps the maximum music volume at 25% so it never overshadows the hosts.
+    Pure Volume Automation (No complex mixing or sidechain algorithms).
+    Literally scans the audio for pauses and turns the background music 
+    up or down exactly like a human audio engineer riding a fader.
     """
-    logger.info("Executing Broadcast-Grade FFmpeg Sidechain Ducker (Tuned for subtle breathing)...")
+    logger.info("Executing Pure Volume Automation (Documentary Style)...")
     
-    voice_path = Path(voice_path)
-    music_path = Path(music_path)
-    output_path = Path(output_path)
+    voice = AudioSegment.from_wav(str(voice_path))
+    music = AudioSegment.from_file(str(music_path))
     
-    # 1. First ensure music is looped to be long enough using Pydub
-    voice_seg = AudioSegment.from_wav(str(voice_path))
-    music_seg = AudioSegment.from_file(str(music_path))
+    # 1. Loop music to cover the voice track
+    if len(music) < len(voice):
+        loops = (len(voice) // len(music)) + 1
+        music = music * loops
+    music = music[:len(voice)]
     
-    if len(music_seg) < len(voice_seg):
-        loops = (len(voice_seg) // len(music_seg)) + 1
-        music_seg = music_seg * loops
+    # 2. Detect literal pauses in the conversation
+    # Looks for any silence longer than 1.2 seconds (including the Intro & Outro)
+    logger.info("Scanning for pauses and breaths to automate volume...")
+    pauses = silence.detect_silences(voice, min_silence_len=1200, silence_thresh=-45)
+    
+    # 3. Build the dynamic background track block by block
+    final_music = AudioSegment.empty()
+    last_end = 0
+    
+    # --- DOCUMENTARY VOLUME SETTINGS ---
+    TALKING_DROP = 28  # Drops music 28dB so it is deeply in the background when hosts talk
+    PAUSE_DROP = 14    # Raises music to -14dB during intro, outro, and mid-sentence breaths
+    FADE_MS = 500      # A smooth half-second glide so the volume change doesn't "click" or jerk
+    
+    for start, end in pauses:
+        # A. Add the talking section (Turn Volume DOWN)
+        if start > last_end:
+            talking_chunk = music[last_end:start] - TALKING_DROP
+            final_music += talking_chunk
+            
+        # B. Add the paused section (Turn Volume UP)
+        pause_chunk = music[start:end] - PAUSE_DROP
         
-    # Add a gentle fade out to the very end of the music tail
-    music_seg = music_seg[:len(voice_seg)].fade_out(3000)
-    
-    # Save the looped music to a temp file for FFmpeg
-    temp_music_path = music_path.parent / "temp_music_looped.wav"
-    music_seg.export(str(temp_music_path), format="wav")
-
-    # =========================================================================
-    # 🎛️ THE SUBTLE BREATHING MATRIX
-    # volume=0.25 on the music ensures the highest "swell" is still quiet.
-    # threshold=0.015 and ratio=5.0 pushes the music extremely deep when hosts talk.
-    # release=600 is the magic number for a smooth, natural swell during breaths.
-    # =========================================================================
-    
-    filter_complex = (
-        "[0:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=0.25[music];"
-        "[1:a]aformat=sample_rates=44100:channel_layouts=stereo,volume=1.20[voice];"
-        "[voice]asplit=2[voice_sc][voice_mix];"
-        "[music][voice_sc]sidechaincompress=threshold=0.015:ratio=5.0:attack=10:release=600[ducked_music];"
-        "[ducked_music][voice_mix]amerge=inputs=2[merged];"
-        "[merged]pan=stereo|c0<c0+c2|c1<c1+c3[out]"
-    )
-    
-    try:
-        subprocess.run([
-            "ffmpeg", 
-            "-i", str(temp_music_path),
-            "-i", str(voice_path),
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-y", str(output_path)
-        ], check=True, capture_output=True)
+        # Apply smooth glides to the pause chunk so it feels natural
+        fade_in_len = min(FADE_MS, len(pause_chunk) // 2)
+        fade_out_len = min(FADE_MS, len(pause_chunk) // 2)
         
-        temp_music_path.unlink(missing_ok=True)
-        logger.info("✅ Subtle Sidechain Mix Complete!")
-        return output_path
+        if fade_in_len > 0:
+            pause_chunk = pause_chunk.fade_in(fade_in_len).fade_out(fade_out_len)
+            
+        final_music += pause_chunk
+        last_end = end
         
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode() if e.stderr else str(e)
-        logger.error(f"FFmpeg ducking failed: {error_msg}")
+    # Add any remaining talking section at the very end of the file
+    if last_end < len(music):
+        final_music += music[last_end:] - TALKING_DROP
         
-        # Failsafe in case of catastrophic FFmpeg failure
-        logger.info("Falling back to static PyDub mix...")
-        mixed = (music_seg - 20).overlay(voice_seg)
-        mixed.export(str(output_path), format="wav")
-        return output_path
+    # Ensure lengths match perfectly to the millisecond
+    final_music = final_music[:len(voice)]
+    
+    # 4. Pure Overlay 
+    # Just laying the clean voices straight over the clean music track
+    logger.info("Overlaying pristine voices onto the automated volume track...")
+    mixed = final_music.overlay(voice)
+    
+    mixed.export(str(output_path), format="wav")
+    logger.info("✅ Pure Volume Automation Mix Complete!")
+    return output_path
