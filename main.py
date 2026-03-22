@@ -151,6 +151,10 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
             except Exception as e:
                 logger.warning(f"Failed to attach intro, skipping: {e}")
 
+        # =====================================================================
+        # 🎛️ TRANSPARENT MASTERING
+        # Uses a clean limiter so the 'Goldilocks' volume fader is respected!
+        # =====================================================================
         update_progress("Applying Final Transparent Mastering...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
@@ -175,9 +179,8 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
         save_tasks()
 
 # =========================================================================
-# 🎛️ MULTI-FILE UPLOAD ENDPOINT
-# Accepts an array of files, automatically stitches them together, and saves 
-# them as a single master track for the pipeline.
+# 🎛️ MULTI-FILE UPLOAD ENDPOINT (UNLOCKED FORMATS)
+# Bypasses strict browser MIME type limits so .m4a, .aac, etc. don't fail.
 # =========================================================================
 @app.post("/upload")
 async def upload_audio(
@@ -206,17 +209,16 @@ async def upload_audio(
                 while chunk := await f.read(1024 * 1024):
                     await out.write(chunk)
             
-            # Load the chunk and append it
+            # Let PyDub natively decode the format (.mp3, .m4a, .ogg, etc.)
             seg = AudioSegment.from_file(str(temp_path))
             combined_audio += seg
             
             # Delete the temp part to save space
             temp_path.unlink(missing_ok=True)
             
-        # Export the glued-together master file
         combined_audio.export(str(file_path), format="wav")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to combine files: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to read or combine audio files: Make sure they are valid media files. Error: {exc}")
 
     # 2. Save Custom Intro (if uploaded)
     custom_intro_path = None
