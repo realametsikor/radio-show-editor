@@ -77,7 +77,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
         clean_audio_path = fp.parent / "clean_input.wav"
         
         try:
-            # Load safely without padding (engine.py handles timeline now)
             voice_segment = AudioSegment.from_file(str(fp))
             voice_segment = voice_segment.set_frame_rate(16000).set_channels(1)
             voice_segment.export(str(clean_audio_path), format="wav")
@@ -102,19 +101,22 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             mood=mood
         )
         
-        update_progress("Applying Final Transparent Mastering...")
+        # =====================================================================
+        # 🎛️ PODCAST GLUE MASTERING
+        # Applies a gentle "glue compressor" to bind the voice and music layers 
+        # together naturally, followed by a brickwall limiter for streaming loudness.
+        # =====================================================================
+        update_progress("Applying Premium Podcast Mastering (Glue & Limiter)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
-        # =====================================================================
-        # 🎛️ TRANSPARENT NPR MASTERING
-        # Removed the heavy FM compressor that was making the background music 
-        # too loud. Now we just apply a clean, transparent safety limiter.
-        # =====================================================================
-        npr_master_filter = "alimiter=limit=-1.0dB"                   
+        premium_master_filter = (
+            "acompressor=threshold=-24dB:ratio=1.5:attack=15:release=50:makeup=2dB,"
+            "alimiter=limit=-1.0dB"
+        )
         
         subprocess.run([
             "ffmpeg", "-i", str(final_path), 
-            "-af", npr_master_filter, 
+            "-af", premium_master_filter, 
             "-ar", "44100", "-ac", "2", 
             str(mastered_output), "-y"
         ], check=True)
