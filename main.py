@@ -7,6 +7,7 @@ import json
 import time
 import subprocess
 import gc
+import shutil
 from pathlib import Path
 
 import aiofiles
@@ -101,11 +102,6 @@ def process_audio(task_id: str, file_path: str, mood: str) -> None:
             mood=mood
         )
         
-        # =====================================================================
-        # 🎛️ PODCAST GLUE MASTERING
-        # Applies a gentle "glue compressor" to bind the voice and music layers 
-        # together naturally, followed by a brickwall limiter for streaming loudness.
-        # =====================================================================
         update_progress("Applying Premium Podcast Mastering (Glue & Limiter)...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
@@ -242,6 +238,31 @@ async def get_recent_shows():
             })
             
     return {"recent_shows": successful_shows}
+
+# =========================================================================
+# 🗑️ NEW DELETE ENDPOINT
+# Safely removes the task from the database and deletes the massive audio 
+# files from the Hugging Face server.
+# =========================================================================
+@app.delete("/delete/{task_id}")
+async def delete_task(task_id: str):
+    if task_id not in tasks:
+        raise HTTPException(status_code=404, detail="Task not found.")
+    
+    # 1. Remove from database
+    del tasks[task_id]
+    save_tasks()
+    
+    # 2. Wipe the physical folder to save disk space
+    job_dir = UPLOAD_DIR / task_id
+    if job_dir.exists():
+        try:
+            shutil.rmtree(job_dir, ignore_errors=True)
+            logger.info(f"Successfully deleted files for task: {task_id}")
+        except Exception as e:
+            logger.error(f"Failed to delete directory for {task_id}: {e}")
+            
+    return {"message": "Show deleted successfully", "task_id": task_id}
 
 @app.get("/debug")
 async def debug_database():
