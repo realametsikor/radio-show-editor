@@ -1,4 +1,4 @@
-"""mixer.py — Intelligent audio ducking and pacing."""
+"""mixer.py — Intelligent audio ducking and structural pacing."""
 from __future__ import annotations
 
 import logging
@@ -7,12 +7,6 @@ from pydub import AudioSegment, silence
 
 logger = logging.getLogger(__name__)
 
-def add_natural_pauses(voice_audio: AudioSegment) -> AudioSegment:
-    """Adds a slight breathable padding to the raw voice track."""
-    logger.info("Padding voice track with natural breath room...")
-    pad = AudioSegment.silent(duration=800)
-    return pad + voice_audio + pad
-
 def mix_with_ducking(
     voice_path: str | Path, 
     music_path: str | Path, 
@@ -20,48 +14,96 @@ def mix_with_ducking(
     music_curve: list = None
 ) -> Path:
     """
-    Pure Volume Automation (The 'Broadcast Whisper' Mix).
-    Forces modern, overly-loud music tracks into the absolute basement 
-    so they never distract from the professional voiceover.
+    Three-Tier Structural Pacing.
+    Injects multiple intentional music breaks (Intro, Post-Hook, Mid, Outro) 
+    and beautifully rides the volume fader around them.
     """
-    logger.info("Executing Pure Volume Automation (Ultra-Quiet Broadcast Mix)...")
+    logger.info("Executing Cinematic Pacing (Multi-Break System)...")
     
     voice = AudioSegment.from_wav(str(voice_path))
     music = AudioSegment.from_file(str(music_path))
     
-    # Give the voices a small boost to guarantee they command the mix
+    # Boost voices for clarity so they command the mix
     voice = voice + 3
+
+    # =====================================================================
+    # 🎬 STRUCTURAL PACING (INJECTING THE BREAKS)
+    # We actively slice the voice track to create intentional moments 
+    # where the music gets to shine before speaking resumes.
+    # =====================================================================
+    logger.info("Scanning for optimal structural interlude points...")
     
-    # 1. Loop music to cover the voice track
+    natural_pauses = silence.detect_silence(voice, min_silence_len=400, silence_thresh=-35)
+    split_points = []
+    
+    if natural_pauses:
+        # 1. The "Post-Hook" Break (NEW)
+        # Finds the first natural pause after the host introduces the topic (between 5s and 45s)
+        for p in natural_pauses:
+            if 5000 < p[0] < 45000:
+                split_points.append(p[0])
+                logger.info(f"Injecting Post-Hook swell at {p[0]/1000} seconds")
+                break
+                
+        # 2. The "Mid-Show" Break
+        midpoint = len(voice) // 2
+        mid_pause = min(natural_pauses, key=lambda p: abs(p[0] - midpoint))
+        
+        # Ensure the mid-pause isn't too close to the post-hook pause (e.g. on very short clips)
+        if not split_points or abs(mid_pause[0] - split_points[0]) > 30000:
+            split_points.append(mid_pause[0])
+            logger.info(f"Injecting Mid-Show swell at {mid_pause[0]/1000} seconds")
+
+    # Sort in reverse order! 
+    # (We insert silence from the back of the track to the front so earlier timestamps don't shift)
+    split_points.sort(reverse=True)
+    
+    # Inject the 4-second internal breaks
+    for sp in split_points:
+        part1 = voice[:sp]
+        part2 = voice[sp:]
+        voice = part1 + AudioSegment.silent(duration=4000) + part2
+        
+    # Add the absolute start (Cold Open) and absolute end (Outro) breaks
+    voice = AudioSegment.silent(duration=4000) + voice + AudioSegment.silent(duration=5000)
+
+    # =====================================================================
+    # 🎛️ TWO-TIER VOLUME AUTOMATION
+    # =====================================================================
+    # Loop music to cover the newly lengthened, beautifully paced voice track
     if len(music) < len(voice):
         loops = (len(voice) // len(music)) + 1
         music = music * loops
     music = music[:len(voice)]
     
-    # 2. Detect thoughtful pauses in the conversation (700ms)
-    logger.info("Scanning for 0.7s pauses to orchestrate the music bed...")
+    logger.info("Scanning for dynamic swells to orchestrate the music bed...")
     pauses = silence.detect_silence(voice, min_silence_len=700, silence_thresh=-35)
     
-    # 3. Build the dynamic background track block by block
     final_music = AudioSegment.empty()
     last_end = 0
     
-    # --- THE BROADCAST WHISPER SETTINGS ---
-    # We are dropping these massively to account for heavily mastered music tracks.
-    TALKING_DROP = 38  # Absolute whisper. Pushes the music deep into the background.
-    PAUSE_DROP = 22    # Gentle, controlled swell that never gets distracting.
-    FADE_MS = 800      # 0.8-second cinematic crossfade for invisible, buttery transitions.
+    # --- DYNAMIC BROADCAST SETTINGS ---
+    TALKING_DROP = 38    # Absolute whisper while speaking
+    BREATH_DROP = 22     # Gentle background swell during normal conversation pauses
+    INTERLUDE_DROP = 14  # Prominent, beautiful swell during our injected 4-second breaks!
+    FADE_MS = 800        # Smooth 0.8-second cinematic volume glide
     
     for start, end in pauses:
-        # A. Add the talking section (Turn Volume DOWN to -38dB)
+        # A. Add the talking section (Turn Volume DOWN)
         if start > last_end:
             talking_chunk = music[last_end:start] - TALKING_DROP
             final_music += talking_chunk
             
-        # B. Add the paused section (Turn Volume UP to -22dB)
-        pause_chunk = music[start:end] - PAUSE_DROP
-        
-        # Apply buttery smooth glides to the pause chunk
+        # B. Add the paused section (Determine if it's a breath or an interlude)
+        pause_duration = end - start
+        if pause_duration >= 3500:
+            # This is one of our injected structural breaks! Let it soar.
+            pause_chunk = music[start:end] - INTERLUDE_DROP
+        else:
+            # This is just a normal conversation breath. Keep it subtle.
+            pause_chunk = music[start:end] - BREATH_DROP
+            
+        # Apply buttery smooth glides
         fade_in_len = min(FADE_MS, len(pause_chunk) // 2)
         fade_out_len = min(FADE_MS, len(pause_chunk) // 2)
         
@@ -71,17 +113,15 @@ def mix_with_ducking(
         final_music += pause_chunk
         last_end = end
         
-    # Add any remaining talking section at the very end of the file
+    # Add any remaining talking section at the very end
     if last_end < len(music):
         final_music += music[last_end:] - TALKING_DROP
         
-    # Ensure lengths match perfectly to the millisecond
     final_music = final_music[:len(voice)]
     
-    # 4. Pure Overlay 
-    logger.info("Fusing the ultra-quiet automated music bed with enhanced voices...")
+    logger.info("Fusing the dynamically paced music bed with voices...")
     mixed = final_music.overlay(voice)
     
     mixed.export(str(output_path), format="wav")
-    logger.info("✅ Perfect Whisper Mix Complete!")
+    logger.info("✅ Multi-Break Cinematic Mix Complete!")
     return output_path
