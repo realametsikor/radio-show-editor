@@ -7,6 +7,9 @@ from pydub import AudioSegment, silence
 
 logger = logging.getLogger(__name__)
 
+# =====================================================================
+# 🩹 THE MISSING FUNCTION (RESTORED)
+# =====================================================================
 def add_natural_pauses(voice_audio: AudioSegment) -> AudioSegment:
     """Adds a slight breathable padding to the raw voice track."""
     logger.info("Padding voice track with natural breath room...")
@@ -20,82 +23,93 @@ def mix_with_ducking(
     music_curve: list = None
 ) -> Path:
     """
-    Cinematic Pacing Mix.
-    Injects 4-second music breaks at the start, middle, and end so the music
-    can beautifully swell and carry the emotional tone of the episode.
+    Three-Tier Structural Pacing.
+    Injects multiple intentional music breaks (Intro, Post-Hook, Mid, Outro) 
+    and beautifully rides the volume fader around them.
     """
-    logger.info("Executing Cinematic Pacing (Start, Mid, and End Breaks)...")
+    logger.info("Executing Cinematic Pacing (Multi-Break System)...")
     
     voice = AudioSegment.from_wav(str(voice_path))
     music = AudioSegment.from_file(str(music_path))
     
-    # Boost voices for clarity
+    # Boost voices for clarity so they command the mix
     voice = voice + 3
 
     # =====================================================================
     # 🎬 STRUCTURAL PACING (INJECTING THE BREAKS)
+    # We actively slice the voice track to create intentional moments 
+    # where the music gets to shine before speaking resumes.
     # =====================================================================
-    logger.info("Injecting structural music interludes...")
+    logger.info("Scanning for optimal structural interlude points...")
     
-    # 1. Intro Break (4 seconds of music before talking starts)
-    intro_padding = AudioSegment.silent(duration=4000)
-    
-    # 2. Outro Break (5 seconds of music to close the show)
-    outro_padding = AudioSegment.silent(duration=5000)
-    
-    # 3. Mid-Show Break (4 seconds of music in the middle of the conversation)
-    # Find a natural breath near the exact center to safely split it
-    midpoint = len(voice) // 2
     natural_pauses = silence.detect_silence(voice, min_silence_len=400, silence_thresh=-35)
+    split_points = []
     
     if natural_pauses:
-        # Safely find the breath closest to the midpoint of the episode
-        closest_pause = min(natural_pauses, key=lambda p: abs(p[0] - midpoint))
-        split_point = closest_pause[0]
+        # 1. The "Post-Hook" Break
+        # Finds the first natural pause after the host introduces the topic (between 5s and 45s)
+        for p in natural_pauses:
+            if 5000 < p[0] < 45000:
+                split_points.append(p[0])
+                logger.info(f"Injecting Post-Hook swell at {p[0]/1000} seconds")
+                break
+                
+        # 2. The "Mid-Show" Break
+        midpoint = len(voice) // 2
+        mid_pause = min(natural_pauses, key=lambda p: abs(p[0] - midpoint))
         
-        part1 = voice[:split_point]
-        part2 = voice[split_point:]
+        # Ensure the mid-pause isn't too close to the post-hook pause (e.g. on very short clips)
+        if not split_points or abs(mid_pause[0] - split_points[0]) > 30000:
+            split_points.append(mid_pause[0])
+            logger.info(f"Injecting Mid-Show swell at {mid_pause[0]/1000} seconds")
+
+    # Sort in reverse order! 
+    # (We insert silence from the back of the track to the front so earlier timestamps don't shift)
+    split_points.sort(reverse=True)
+    
+    # Inject the 4-second internal breaks
+    for sp in split_points:
+        part1 = voice[:sp]
+        part2 = voice[sp:]
+        voice = part1 + AudioSegment.silent(duration=4000) + part2
         
-        mid_padding = AudioSegment.silent(duration=4000)
-        voice = part1 + mid_padding + part2
-        
-    # Apply the intro and outro
-    voice = intro_padding + voice + outro_padding
+    # Add the absolute start (Cold Open) and absolute end (Outro) breaks
+    voice = AudioSegment.silent(duration=4000) + voice + AudioSegment.silent(duration=5000)
 
     # =====================================================================
     # 🎛️ TWO-TIER VOLUME AUTOMATION
     # =====================================================================
-    # Loop music to cover the newly lengthened voice track
+    # Loop music to cover the newly lengthened, beautifully paced voice track
     if len(music) < len(voice):
         loops = (len(voice) // len(music)) + 1
         music = music * loops
     music = music[:len(voice)]
     
-    logger.info("Scanning for pauses to orchestrate the two-tier music bed...")
+    logger.info("Scanning for dynamic swells to orchestrate the music bed...")
     pauses = silence.detect_silence(voice, min_silence_len=700, silence_thresh=-35)
     
     final_music = AudioSegment.empty()
     last_end = 0
     
     # --- DYNAMIC BROADCAST SETTINGS ---
-    TALKING_DROP = 38    # Absolute whisper while speaking (Your requested volume)
-    BREATH_DROP = 22     # Gentle swell during normal conversation pauses
+    TALKING_DROP = 38    # Absolute whisper while speaking
+    BREATH_DROP = 22     # Gentle background swell during normal conversation pauses
     INTERLUDE_DROP = 14  # Prominent, beautiful swell during our injected 4-second breaks!
-    FADE_MS = 800        # Smooth 0.8-second cinematic glide
+    FADE_MS = 800        # Smooth 0.8-second cinematic volume glide
     
     for start, end in pauses:
         # A. Add the talking section (Turn Volume DOWN)
         if start > last_end:
             talking_chunk = music[last_end:start] - TALKING_DROP
-            final_music += talking_chunk
+            final_music += chunk_fader(talking_chunk, final_music) if False else talking_chunk
             
-        # B. Add the paused section (Determine if it's a breath or a long interlude)
+        # B. Add the paused section (Determine if it's a breath or an interlude)
         pause_duration = end - start
         if pause_duration >= 3500:
-            # This is one of our injected structural breaks! Let the music shine.
+            # This is one of our injected structural breaks! Let it soar.
             pause_chunk = music[start:end] - INTERLUDE_DROP
         else:
-            # This is just a normal conversation breath. Keep the swell subtle.
+            # This is just a normal conversation breath. Keep it subtle.
             pause_chunk = music[start:end] - BREATH_DROP
             
         # Apply buttery smooth glides
@@ -118,5 +132,5 @@ def mix_with_ducking(
     mixed = final_music.overlay(voice)
     
     mixed.export(str(output_path), format="wav")
-    logger.info("✅ Cinematic Pacing Mix Complete!")
+    logger.info("✅ Multi-Break Cinematic Mix Complete!")
     return output_path
