@@ -83,7 +83,7 @@ def fetch_builtin_intro(selection: str, work_dir: Path) -> Path | None:
         logger.warning(f"Failed to fetch builtin intro: {e}")
         return None
 
-def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str, custom_intro_path: str | None) -> None:
+def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str, custom_intro_path: str | None, custom_music_path: str | None) -> None:
     def update_progress(msg: str):
         logger.info(msg)
         tasks[task_id]["message"] = msg
@@ -112,8 +112,18 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
         output_file = fp.parent / "radio_show_final.wav"
         music_path = fp.parent / "background_music.mp3"
         
-        update_progress(f"Curating professional background playlist for vibe: {mood}...")
-        build_music_track(mood=mood, output_path=str(music_path), work_dir=fp.parent)
+        # =====================================================================
+        # 🎵 CUSTOM MUSIC BYPASS
+        # If user uploaded custom music, use it. Otherwise, fetch AI music.
+        # =====================================================================
+        if mood == "custom" and custom_music_path and Path(custom_music_path).exists():
+            update_progress("Loading your custom background music...")
+            # Convert whatever format they uploaded to standard mp3 for the mixer
+            custom_seg = AudioSegment.from_file(custom_music_path)
+            custom_seg.export(str(music_path), format="mp3")
+        else:
+            update_progress(f"Curating professional background playlist for vibe: {mood}...")
+            build_music_track(mood=mood, output_path=str(music_path), work_dir=fp.parent)
 
         update_progress("Running Claude AI & Pyannote Engine (This takes the longest)...")
         final_path = run_pipeline(
@@ -151,10 +161,6 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
             except Exception as e:
                 logger.warning(f"Failed to attach intro, skipping: {e}")
 
-        # =====================================================================
-        # 🎛️ TRANSPARENT MASTERING
-        # Uses a clean limiter so the 'Goldilocks' volume fader is respected!
-        # =====================================================================
         update_progress("Applying Final Transparent Mastering...")
         mastered_output = fp.parent / "radio_show_mastered.wav"
         
@@ -178,17 +184,14 @@ def process_audio(task_id: str, file_path: str, mood: str, intro_selection: str,
         tasks[task_id]["message"] = f"Error: {str(exc)}"
         save_tasks()
 
-# =========================================================================
-# 🎛️ MULTI-FILE UPLOAD ENDPOINT (UNLOCKED FORMATS)
-# Bypasses strict browser MIME type limits so .m4a, .aac, etc. don't fail.
-# =========================================================================
 @app.post("/upload")
 async def upload_audio(
     background_tasks: BackgroundTasks, 
     files: List[UploadFile] = File(...),
     mood: str = Form("documentary"),
     intro_selection: str = Form("none"),
-    custom_intro: Optional[UploadFile] = File(None)
+    custom_intro: Optional[UploadFile] = File(None),
+    custom_music: Optional[UploadFile] = File(None)  # NEW FIELD FOR CUSTOM MUSIC
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded.")
@@ -209,16 +212,13 @@ async def upload_audio(
                 while chunk := await f.read(1024 * 1024):
                     await out.write(chunk)
             
-            # Let PyDub natively decode the format (.mp3, .m4a, .ogg, etc.)
             seg = AudioSegment.from_file(str(temp_path))
             combined_audio += seg
-            
-            # Delete the temp part to save space
             temp_path.unlink(missing_ok=True)
             
         combined_audio.export(str(file_path), format="wav")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read or combine audio files: Make sure they are valid media files. Error: {exc}")
+        raise HTTPException(status_code=500, detail=f"Failed to combine audio files. Error: {exc}")
 
     # 2. Save Custom Intro (if uploaded)
     custom_intro_path = None
@@ -231,6 +231,17 @@ async def upload_audio(
         except Exception as exc:
             logger.warning(f"Failed to save custom intro: {exc}")
 
+    # 3. Save Custom Music (if uploaded)
+    custom_music_path = None
+    if mood == "custom" and custom_music is not None:
+        custom_music_path = job_dir / (custom_music.filename or "custom_music.wav")
+        try:
+            async with aiofiles.open(custom_music_path, "wb") as out:
+                while chunk := await custom_music.read(1024 * 1024):
+                    await out.write(chunk)
+        except Exception as exc:
+            logger.warning(f"Failed to save custom music: {exc}")
+
     tasks[task_id] = {
         "task_id": task_id,
         "status": "PENDING", 
@@ -242,7 +253,15 @@ async def upload_audio(
     }
     save_tasks()
     
-    background_tasks.add_task(process_audio, task_id, str(file_path.resolve()), mood, intro_selection, str(custom_intro_path) if custom_intro_path else None)
+    background_tasks.add_task(
+        process_audio, 
+        task_id, 
+        str(file_path.resolve()), 
+        mood, 
+        intro_selection, 
+        str(custom_intro_path) if custom_intro_path else None,
+        str(custom_music_path) if custom_music_path else None
+    )
     return {"task_id": task_id}
 
 @app.get("/status/{task_id}")
