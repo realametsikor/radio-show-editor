@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, ChangeEvent } from "react";
-import { UploadCloud, Music, FileAudio, Settings2, Sparkles, Loader2, Mic2, X } from "lucide-react";
+import { UploadCloud, Music, FileAudio, Settings2, Sparkles, Loader2, Mic2, X, Headphones } from "lucide-react";
 
 type FileUploadProps = {
   onUploadComplete: (taskId: string) => void;
@@ -13,6 +13,7 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://realametsikor-radio-
 export default function FileUpload({ onUploadComplete }: FileUploadProps) {
   const [files, setFiles] = useState<File[]>([]);
   const [customIntroFile, setCustomIntroFile] = useState<File | null>(null);
+  const [customMusicFile, setCustomMusicFile] = useState<File | null>(null); // NEW STATE
   
   const [mood, setMood] = useState("documentary");
   const [introSelection, setIntroSelection] = useState("none");
@@ -20,6 +21,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const customIntroInputRef = useRef<HTMLInputElement>(null);
+  const customMusicInputRef = useRef<HTMLInputElement>(null); // NEW REF
 
   const handleMainFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
@@ -35,6 +37,12 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
   const handleCustomIntroChange = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       setCustomIntroFile(e.target.files[0]);
+    }
+  };
+
+  const handleCustomMusicChange = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setCustomMusicFile(e.target.files[0]);
     }
   };
 
@@ -55,6 +63,10 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
       formData.append("custom_intro", customIntroFile);
     }
 
+    if (mood === "custom" && customMusicFile) {
+      formData.append("custom_music", customMusicFile);
+    }
+
     try {
       const res = await fetch(`${API_URL}/upload`, {
         method: "POST",
@@ -72,6 +84,11 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
       setIsUploading(false);
     }
   };
+
+  // Check if button should be disabled (Missing required custom files)
+  const isMissingCustomFiles = 
+    (introSelection === "custom" && !customIntroFile) || 
+    (mood === "custom" && !customMusicFile);
 
   return (
     <div className="mx-auto w-full max-w-2xl animate-fade-in">
@@ -95,6 +112,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
               <option value="lo-fi">Lo-Fi (Chill & Jazzy)</option>
               <option value="true_crime">True Crime (Tense & Mysterious)</option>
               <option value="upbeat">Upbeat (High Energy)</option>
+              <option value="custom">Upload Custom Music...</option> {/* NEW OPTION */}
             </select>
             <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-gray-500">
               ▼
@@ -127,35 +145,67 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
         </div>
       </div>
 
-      {/* Custom Intro Upload */}
-      {introSelection === "custom" && (
-        <div className="mb-6 p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex items-center justify-between gap-4 animate-fade-in">
-          <div className="flex items-center gap-3 overflow-hidden">
-            <Mic2 className="h-5 w-5 text-indigo-400 shrink-0" />
-            <div className="truncate">
-              <p className="text-sm font-medium text-indigo-200">Custom Intro Audio</p>
-              <p className="text-xs text-gray-400 truncate">
-                {customIntroFile ? customIntroFile.name : "Select an MP3, WAV, or M4A file"}
-              </p>
+      {/* Conditionally Rendered Custom Inputs */}
+      <div className="space-y-3 mb-6">
+        
+        {/* Custom Intro Upload */}
+        {introSelection === "custom" && (
+          <div className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/5 flex items-center justify-between gap-4 animate-fade-in">
+            <div className="flex items-center gap-3 overflow-hidden">
+              <Mic2 className="h-5 w-5 text-indigo-400 shrink-0" />
+              <div className="truncate">
+                <p className="text-sm font-medium text-indigo-200">Custom Intro Audio</p>
+                <p className="text-xs text-gray-400 truncate">
+                  {customIntroFile ? customIntroFile.name : "Select an MP3, WAV, or M4A file"}
+                </p>
+              </div>
             </div>
+            <button
+              onClick={() => customIntroInputRef.current?.click()}
+              className="shrink-0 rounded-lg bg-indigo-500/20 px-4 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/30 transition-colors"
+            >
+              {customIntroFile ? "Change File" : "Browse..."}
+            </button>
+            <input
+              type="file"
+              accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*"
+              ref={customIntroInputRef}
+              onChange={handleCustomIntroChange}
+              className="hidden"
+            />
           </div>
-          <button
-            onClick={() => customIntroInputRef.current?.click()}
-            className="shrink-0 rounded-lg bg-indigo-500/20 px-4 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/30 transition-colors"
-          >
-            {customIntroFile ? "Change File" : "Browse..."}
-          </button>
-          <input
-            type="file"
-            accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*"
-            ref={customIntroInputRef}
-            onChange={handleCustomIntroChange}
-            className="hidden"
-          />
-        </div>
-      )}
+        )}
 
-      {/* MULTI-FILE Podcast Dropzone (Now unlocked for all media formats) */}
+        {/* Custom Background Music Upload */}
+        {mood === "custom" && (
+          <div className="p-4 rounded-xl border border-pink-500/30 bg-pink-500/5 flex items-center justify-between gap-4 animate-fade-in">
+            <div className="flex items-center gap-3 overflow-hidden">
+              <Headphones className="h-5 w-5 text-pink-400 shrink-0" />
+              <div className="truncate">
+                <p className="text-sm font-medium text-pink-200">Custom Background Music</p>
+                <p className="text-xs text-gray-400 truncate">
+                  {customMusicFile ? customMusicFile.name : "Select an MP3, WAV, or M4A file"}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => customMusicInputRef.current?.click()}
+              className="shrink-0 rounded-lg bg-pink-500/20 px-4 py-2 text-xs font-semibold text-pink-300 hover:bg-pink-500/30 transition-colors"
+            >
+              {customMusicFile ? "Change File" : "Browse..."}
+            </button>
+            <input
+              type="file"
+              accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,audio/*"
+              ref={customMusicInputRef}
+              onChange={handleCustomMusicChange}
+              className="hidden"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* MULTI-FILE Podcast Dropzone */}
       <div 
         onClick={() => fileInputRef.current?.click()}
         className={`group relative cursor-pointer rounded-3xl border-2 border-dashed transition-all duration-300 ${
@@ -214,7 +264,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
       {files.length > 0 && (
         <button
           onClick={handleUpload}
-          disabled={isUploading || (introSelection === "custom" && !customIntroFile)}
+          disabled={isUploading || isMissingCustomFiles}
           className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-6 py-4 text-base font-bold text-white transition-all btn-glow hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isUploading ? (
