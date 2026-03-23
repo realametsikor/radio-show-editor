@@ -7,9 +7,6 @@ from pydub import AudioSegment, silence
 
 logger = logging.getLogger(__name__)
 
-# =====================================================================
-# 🩹 THE MISSING FUNCTION (RESTORED)
-# =====================================================================
 def add_natural_pauses(voice_audio: AudioSegment) -> AudioSegment:
     """Adds a slight breathable padding to the raw voice track."""
     logger.info("Padding voice track with natural breath room...")
@@ -101,15 +98,15 @@ def mix_with_ducking(
         # A. Add the talking section (Turn Volume DOWN)
         if start > last_end:
             talking_chunk = music[last_end:start] - TALKING_DROP
-            final_music += chunk_fader(talking_chunk, final_music) if False else talking_chunk
+            final_music += talking_chunk
             
         # B. Add the paused section (Determine if it's a breath or an interlude)
         pause_duration = end - start
         if pause_duration >= 3500:
-            # This is one of our injected structural breaks! Let it soar.
+            # This is one of our injected structural breaks! Let it soar (-14dB).
             pause_chunk = music[start:end] - INTERLUDE_DROP
         else:
-            # This is just a normal conversation breath. Keep it subtle.
+            # This is just a normal conversation breath. Keep it subtle (-22dB).
             pause_chunk = music[start:end] - BREATH_DROP
             
         # Apply buttery smooth glides
