@@ -39,12 +39,12 @@ def mix_with_ducking(
     # =====================================================================
     logger.info("Scanning for optimal structural interlude points...")
     
+    # Corrected: detect_silence (NO 'S')
     natural_pauses = silence.detect_silence(voice, min_silence_len=400, silence_thresh=-35)
     split_points = []
     
     if natural_pauses:
         # 1. The "Post-Hook" Break
-        # Finds the first natural pause after the host introduces the topic (between 5s and 45s)
         for p in natural_pauses:
             if 5000 < p[0] < 45000:
                 split_points.append(p[0])
@@ -55,13 +55,11 @@ def mix_with_ducking(
         midpoint = len(voice) // 2
         mid_pause = min(natural_pauses, key=lambda p: abs(p[0] - midpoint))
         
-        # Ensure the mid-pause isn't too close to the post-hook pause (e.g. on very short clips)
         if not split_points or abs(mid_pause[0] - split_points[0]) > 30000:
             split_points.append(mid_pause[0])
             logger.info(f"Injecting Mid-Show swell at {mid_pause[0]/1000} seconds")
 
-    # Sort in reverse order! 
-    # (We insert silence from the back of the track to the front so earlier timestamps don't shift)
+    # Sort in reverse order to insert silence from back to front
     split_points.sort(reverse=True)
     
     # Inject the 4-second internal breaks
@@ -83,6 +81,8 @@ def mix_with_ducking(
     music = music[:len(voice)]
     
     logger.info("Scanning for dynamic swells to orchestrate the music bed...")
+    
+    # Corrected: detect_silence (NO 'S')
     pauses = silence.detect_silence(voice, min_silence_len=700, silence_thresh=-35)
     
     final_music = AudioSegment.empty()
@@ -103,10 +103,10 @@ def mix_with_ducking(
         # B. Add the paused section (Determine if it's a breath or an interlude)
         pause_duration = end - start
         if pause_duration >= 3500:
-            # This is one of our injected structural breaks! Let it soar (-14dB).
+            # This is one of our injected structural breaks! Let it soar.
             pause_chunk = music[start:end] - INTERLUDE_DROP
         else:
-            # This is just a normal conversation breath. Keep it subtle (-22dB).
+            # This is just a normal conversation breath. Keep it subtle.
             pause_chunk = music[start:end] - BREATH_DROP
             
         # Apply buttery smooth glides
