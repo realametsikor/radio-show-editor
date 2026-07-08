@@ -49,9 +49,9 @@ export default function RecentShows() {
     }
   };
 
-  // =========================================================================
-  # 📥 THE BLOB DOWNLOADER
-  # Downloads the file in the background so the site never visually breaks!
+// =========================================================================
+  // 📥 THE BLOB DOWNLOADER
+  // Downloads the file in the background so the site never visually breaks!
   // =========================================================================
   const handleDownload = async (taskId: string, format: string, filename: string) => {
     // Set loading state for this specific button
