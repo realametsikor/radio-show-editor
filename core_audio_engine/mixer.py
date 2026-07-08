@@ -1,0 +1,199 @@
+"""mixer.py — Intelligent audio ducking and structural pacing."""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from pydub import AudioSegment, silence
+
+logger = logging.getLogger(__name__)
+
+def add_natural_pauses(voice_audio: AudioSegment) -> AudioSegment:
+    """Adds a slight breathable padding to the raw voice track."""
+    logger.info("Padding voice track with natural breath room...")
+    pad = AudioSegment.silent(duration=800)
+    return pad + voice_audio + pad
+
+def mix_with_ducking(
+    voice_path: str | Path, 
+    music_path: str | Path, 
+    output_path: str | Path, 
+    music_curve: list = None
+) -> Path:
+    """
+    Three-Tier Structural Pacing.
+    Injects multiple intentional music breaks (Intro, Post-Hook, Mid, Outro) 
+    and beautifully rides the volume fader around them.
+    """
+    logger.info("Executing Cinematic Pacing (Multi-Break System)...")
+    
+    voice = AudioSegment.from_wav(str(voice_path))
+    music = AudioSegment.from_file(str(music_path))
+    
+    # Boost voices for clarity so they command the mix
+    voice = voice + 3
+
+    # =====================================================================
+    # 🎬 STRUCTURAL PACING (INJECTING THE BREAKS)
+    # We actively slice the voice track to create intentional moments 
+    # where the music gets to shine before speaking resumes.
+    # =====================================================================
+    logger.info("Scanning for optimal structural interlude points...")
+    
+    # Corrected: detect_silence (NO 'S')
+    natural_pauses = silence.detect_silence(voice, min_silence_len=400, silence_thresh=-35)
+    split_points = []
+    
+    if natural_pauses:
+        # 1. The "Post-Hook" Break
+        for p in natural_pauses:
+            if 5000 < p[0] < 45000:
+                split_points.append(p[0])
+                logger.info(f"Injecting Post-Hook swell at {p[0]/1000} seconds")
+                break
+                
+        # 2. The "Mid-Show" Break
+        midpoint = len(voice) // 2
+        mid_pause = min(natural_pauses, key=lambda p: abs(p[0] - midpoint))
+        
+        if not split_points or abs(mid_pause[0] - split_points[0]) > 30000:
+            split_points.append(mid_pause[0])
+            logger.info(f"Injecting Mid-Show swell at {mid_pause[0]/1000} seconds")
+
+    # Sort in reverse order to insert silence from back to front
+    split_points.sort(reverse=True)
+    
+    # Inject the 4-second internal breaks
+    for sp in split_points:
+        part1 = voice[:sp]
+        part2 = voice[sp:]
+        voice = part1 + AudioSegment.silent(duration=4000) + part2
+        
+    # Add the absolute start (Cold Open) and absolute end (Outro) breaks
+    voice = AudioSegment.silent(duration=4000) + voice + AudioSegment.silent(duration=5000)
+
+    # =====================================================================
+    # 🎛️ TWO-TIER VOLUME AUTOMATION
+    # =====================================================================
+    # Loop music to cover the newly lengthened, beautifully paced voice track
+    if len(music) < len(voice):
+        loops = (len(voice) // len(music)) + 1
+        music = music * loops
+    music = music[:len(voice)]
+    
+    logger.info("Scanning for dynamic swells to orchestrate the music bed...")
+    
+    # Corrected: detect_silence (NO 'S')
+    pauses = silence.detect_silence(voice, min_silence_len=700, silence_thresh=-35)
+    
+    final_music = AudioSegment.empty()
+    last_end = 0
+    
+    # --- DYNAMIC BROADCAST SETTINGS ---
+    TALKING_DROP = 38    # Absolute whisper while speaking
+    BREATH_DROP = 22     # Gentle background swell during normal conversation pauses
+    INTERLUDE_DROP = 14  # Prominent, beautiful swell during our injected 4-second breaks!
+    FADE_MS = 800        # Smooth 0.8-second cinematic volume glide
+    
+    for start, end in pauses:
+        # A. Add the talking section (Turn Volume DOWN)
+        if start > last_end:
+            talking_chunk = music[last_end:start] - TALKING_DROP
+            final_music += talking_chunk
+            
+        # B. Add the paused section (Determine if it's a breath or an interlude)
+        pause_duration = end - start
+        if pause_duration >= 3500:
+            # This is one of our injected structural breaks! Let it soar.
+            pause_chunk = music[start:end] - INTERLUDE_DROP
+        else:
+            # This is just a normal conversation breath. Keep it subtle.
+            pause_chunk = music[start:end] - BREATH_DROP
+            
+        # Apply buttery smooth glides
+        fade_in_len = min(FADE_MS, len(pause_chunk) // 2)
+        fade_out_len = min(FADE_MS, len(pause_chunk) // 2)
+        
+        if fade_in_len > 0:
+            pause_chunk = pause_chunk.fade_in(fade_in_len).fade_out(fade_out_len)
+            
+        final_music += pause_chunk
+        last_end = end
+        
+    # Add any remaining talking section at the very end
+    if last_end < len(music):
+        final_music += music[last_end:] - TALKING_DROP
+        
+    final_music = final_music[:len(voice)]
+    
+    logger.info("Fusing the dynamically paced music bed with voices...")
+    mixed = final_music.overlay(voice)
+    
+    mixed.export(str(output_path), format="wav")
+    logger.info("✅ Multi-Break Cinematic Mix Complete!")
+    return output_path
+
+
+def mix_narration(
+    voice_path: str | Path,
+    music_path: str | Path,
+    output_path: str | Path,
+) -> Path:
+    """
+    Single-host story/narration mix.
+
+    Unlike mix_with_ducking (built for two-host podcast dialogue), this does
+    NOT inject structural silence breaks and does NOT swell the music up loud
+    during pauses. It keeps a steady, calm music bed under the narration —
+    felt, but never competing with the voice.
+    """
+    logger.info("Executing Narration Mix (steady bed, no interludes)...")
+
+    voice = AudioSegment.from_wav(str(voice_path))
+    music = AudioSegment.from_file(str(music_path))
+
+    # Gentle clarity boost — subtler than the podcast mode's +3dB
+    voice = voice + 2
+
+    # Loop music to cover the full narration length
+    if len(music) < len(voice):
+        loops = (len(voice) // len(music)) + 1
+        music = music * loops
+    music = music[:len(voice)]
+
+    # Only detect natural breathing pauses — nothing is injected into the voice
+    pauses = silence.detect_silence(voice, min_silence_len=600, silence_thresh=-35)
+
+    # --- CALM NARRATION SETTINGS ---
+    TALKING_DROP = 16   # softer duck — music stays felt under continuous narration
+    BREATH_DROP  = 8    # noticeable lift during breaths, so the bed keeps "breathing"
+    FADE_MS = 600        # smooth glide, no abrupt jumps
+
+    final_music = AudioSegment.empty()
+    last_end = 0
+
+    for start, end in pauses:
+        if start > last_end:
+            final_music += music[last_end:start] - TALKING_DROP
+
+        pause_chunk = music[start:end] - BREATH_DROP
+        fade_len = min(FADE_MS, len(pause_chunk) // 2)
+        if fade_len > 0:
+            pause_chunk = pause_chunk.fade_in(fade_len).fade_out(fade_len)
+        final_music += pause_chunk
+        last_end = end
+
+    if last_end < len(music):
+        final_music += music[last_end:] - TALKING_DROP
+
+    final_music = final_music[:len(voice)]
+
+    # Long, calm fade in/out — breathes the listener in and out rather than
+    # cutting or swelling
+    final_music = final_music.fade_in(2500).fade_out(3000)
+
+    logger.info("Fusing the steady narration bed with the voice...")
+    mixed = final_music.overlay(voice)
+
+    mixed.export(str(output_path), format="wav")
+    logger.info("✅ Narration Mix Complete!")
+    return output_path
